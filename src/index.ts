@@ -493,10 +493,11 @@ export interface XcodeLauncherOptions {
 /**
  * Export Xcode's official skills into the cache directory.
  *
- * Runs `<xcrun> agent skills export --output-dir <cacheDir> --replace-existing`
- * so the cache always matches the locally installed Xcode. The content is
- * generated on the user's machine from their own Xcode; the package ships no
- * Apple content. Bounded by {@link EXPORT_TIMEOUT_MS} and the caller's signal.
+ * Runs `<command> agent skills export --output-dir <cacheDir> --replace-existing`.
+ * A successful export replaces the existing skill directories; a failed or
+ * aborted export may leave a partially replaced cache. The content is generated
+ * on the user's machine from their own Xcode; the package ships no Apple
+ * content. Bounded by {@link EXPORT_TIMEOUT_MS} and the caller's signal.
  * @param cacheDir - directory receiving the skill subdirectories.
  * @param signal - cancellation; aborts and kills the export child process.
  * @param options - xcrun executable and extra environment shared with the MCP mount.

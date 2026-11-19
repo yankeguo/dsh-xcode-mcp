@@ -9,7 +9,7 @@
 | 维度 | 声明/范围 | 验证状态 |
 | --- | --- | --- |
 | DSH | `>=0.2.1-rc.1 <0.3.0`（`engines.dsh`） | API/类型面已对照 `dsh-v0.2.1-rc.1` 与 `dsh-v0.2.2-rc.5` 两个 tag；运行时基准 `0.2.2-rc.5` |
-| Node.js | `>=24.9`（`engines.node`） | 在 Node 24/26 上构建与测试；**Node 22.19 未验证** |
+| Node.js | `>=24.9`（`engines.node`） | committed CI（verify.yml / publish.yml）只 pin Node 24；Node 26 仅本地开发验证，未在 CI 矩阵；**Node 22.19 未验证** |
 | cordis peer | `>=4.0.5 <4.2.0` | rc.1 带 4.0.5，rc.5 带 4.1.0 |
 | schemastery peer | `>=3.18.5 <3.20.0` | rc.1 带 3.18.5，rc.5 带 3.19.0 |
 | macOS | 必需 | 真实环境验证 macOS + Xcode 27.2 |
@@ -32,7 +32,8 @@ Host 侧支持，而不是改本插件的 `engines.dsh`。
 ## Node 22.19：未验证
 
 DSH 0.2.1-rc.1 官方支持 Node `^22.19.0 || >=24.0.0`，但本插件的
-`engines.node` 是 `>=24.9`，并且所有测试/CI 都在 Node 24/26 上运行。插件代码
+`engines.node` 是 `>=24.9`。仓库 committed CI（`verify.yml` / `publish.yml`）
+只 pin Node 24；Node 26 只在本地开发时跑过，仓库没有 Node 26 CI 矩阵。插件代码
 没有刻意使用 24.9 专属 API，但也没有在 Node 22.19 上跑过完整测试，因此：
 
 - 不声明 Node 22 兼容；

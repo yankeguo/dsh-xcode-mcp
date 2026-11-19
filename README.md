@@ -47,7 +47,7 @@ DSH has no workspace-level MCP configuration: a profile-level `mcp-client` entry
 
 Installing the bundle is enough — no manual skill installation. Xcode 26 ships official skills (for example `swiftui-specialist`, `app-intents-specialist`, `device-interaction`, `xctrace`, `modernize-tests`, `audit-xcode-security-settings`); the plugin exports them with `xcrun agent skills export` and serves them through DSH's skill registry:
 
-- **Export timing.** Once per plugin activation, asynchronously (it blocks neither activation nor Agent creation), into `$DSH_HOME/cache/dsh-xcode-mcp/skills` (default `~/.dsh/cache/dsh-xcode-mcp/skills`), with `--replace-existing` so the cache always matches the installed Xcode. The export is bounded by 60s and skipped when `mcpbridge` is unavailable. The package ships no Apple content: everything is generated locally from your own Xcode.
+- **Export timing.** Once per plugin activation, asynchronously (it blocks neither activation nor Agent creation), into `$DSH_HOME/cache/dsh-xcode-mcp/skills` (default `~/.dsh/cache/dsh-xcode-mcp/skills`), with `--replace-existing`; only a successful export replaces the cache. A failed or aborted export can leave a partially replaced cache, and a non-xcrun launcher exports through the system `xcrun` (see Bridge preflight). The export is bounded by 60s and skipped when `mcpbridge` is unavailable. The package ships no Apple content: everything is generated locally from your own Xcode.
 - **Scope.** The provider is registered through each Xcode Agent's own Context, so the skills are visible only to Sessions whose creation-time directory is inside an Xcode project — exactly like the `mcp__xcode__*` tools. Subagents get their own registration. Cold (not-yet-started) Session catalogs do not include them.
 - **Precedence.** Exported skills sit at rank 600 (`BUNDLED_SKILL_RANK`) and win same-name packaged contributions inside their own layer. In DSH's default composition the filesystem project/user roots live in the global layer while this provider is registered in the Agent's layer, so nearest-layer-wins makes the exported Xcode skill shadow same-name global project/user skills inside Xcode Sessions, regardless of rank. Set `skills: false` if a project-local skill must win.
 - **Freshness.** Skill bodies are re-read from the cache on every load; when a new export lands, registered providers are invalidated and the session catalog refreshes automatically.
@@ -62,22 +62,21 @@ Installing the bundle is enough — no manual skill installation. Xcode 26 ships
 ## Installation
 
 ```sh
-# CLI (desktop profile). After rc.2 approval, pin the exact release:
-dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.2
+# CLI (desktop profile). The currently published rc is 0.1.0-rc.1:
+dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.1
 
-# Unversioned install follows latest, which remains rc.1:
+# Unversioned install follows latest, also 0.1.0-rc.1:
 dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp
 
 # or in the Web UI: Plugins → Add plugin → @yankeguo/dsh-xcode-mcp
 ```
 
 > Current registry state (2026-11-19): there is no stable release yet. `latest`
-> and `next` still point at `0.1.0-rc.1`; `0.1.0-rc.2` is the current
-> audit-fix release candidate. The `v0.1.0-rc.2` tag workflow stages it with
-> `next`; it becomes installable only after a successful stage and maintainer
-> approval. `0.0.0-stage` is an earlier probe version. Pin the exact rc
-> (`@0.1.0-rc.2` after approval, `@0.1.0-rc.1` until then); a maintainer should
-> move `latest` to a stable version once one exists.
+> and `next` both point at `0.1.0-rc.1`; `0.0.0-stage` is an earlier probe
+> version. `0.1.0-rc.2` was staged by its tag workflow, but the staged record
+> was rejected, so it was never published. Pin `@0.1.0-rc.1` until a later rc
+> is staged and approved; a maintainer should move `latest` to a stable
+> version once one exists.
 
 For local development, install this checkout as a linked bundle through DSH's plugin manager (`install_bundle` pointed at this directory); run `pnpm build` first so `lib/index.js` exists, and rebuild after source changes.
 

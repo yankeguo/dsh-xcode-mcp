@@ -153,7 +153,7 @@ cordis 4.0.5 / schemastery 3.18.5。子代理在 rc1 包集下跑通 typecheck �
 
 ### 验证
 
-- `pnpm install --frozen-lockfile`、`pnpm verify`（68 tests / 4 files）、
+- `pnpm install --frozen-lockfile`、`pnpm verify`（70 tests / 4 files）、
   `pnpm check:packages`（136 checks）全绿。
 - 真实环境：Xcode 27.2 的 `xcrun mcpbridge` 握手 54 tools；3 个并发 bridge 均
   54 tools；`xcrun agent skills export` 11 skills；导出的 `when_to_use` 已由新增
@@ -167,13 +167,15 @@ cordis 4.0.5 / schemastery 3.18.5。子代理在 rc1 包集下跑通 typecheck �
 二次只读复核对 `8460647..5c388dd` 的后续处置：
 
 - **M5 load 路径**：`loadExportedSkill` 只把 `ENOENT`/`ENOTDIR` 当缺失，其余
-  错误经 provider logger warn 后返回 `undefined`；补 get 的 EISDIR/EACCES 测试。
+  错误经 provider logger warn 后返回 `undefined`；补 get 的 EISDIR/EACCES 测试，
+  并通过真实 skill registry 的 `skills.get` 断言 provider warning 路径。
 - **M4 集成覆盖**：新增 `startAutoloader` 测试，覆盖自定义 xcrun 复用、非 xcrun
   回退 system xcrun、`config.env` 同时到达 probe/export。
 - **平台字段**：确认 DSH 0.2.1-rc.1 忽略 `dsh.bundle.platforms`，不改
   `engines.dsh`；文档明确 rc.1 靠 probe 兜底、0.2.2+ 才强制。
 - **创建取消**：共享 attach task 引入 per-task `AbortController`；creation signal
-  abort 时同时中止 task，新增“取消后不再 mount”测试。
+  abort 时同时中止 task，新增“取消后不再 mount”与“mount handshake 期间取消会
+  dispose mounted”测试。
 - **README 过度承诺**：改写创建等待、teardown、env/xcrun 一致性的表述，区分
   mount handshake 看门狗与无界 discovery/10s probe。
 - **workflow_dispatch 叙述**：改为“使用 main 当前 workflow、只 checkout tag
@@ -182,9 +184,9 @@ cordis 4.0.5 / schemastery 3.18.5。子代理在 rc1 包集下跑通 typecheck �
 - **Node 兼容性**：新增 [`COMPATIBILITY.md`](COMPATIBILITY.md)，明确 rc.1 兼容
   仅在 Node >=24.9 下验证，Node 22.19 未验证；不改 `engines.node`。
 
-新增 7 个测试（61 → 68），包括 M4 集成传递、取消后不 mount、get 读取错误、
-provider warning/invalidator 清理、export 中途卸载、`defaultSkillsCacheDir()`
-默认参数。
+新增 9 个测试（61 → 70），包括 M4 集成传递、取消后不 mount、handshake 取消
+dispose、provider 级 get warning、get 读取错误、provider warning/invalidator
+清理、export 中途卸载、`defaultSkillsCacheDir()` 默认参数。
 
 ## 初版审计（Qwen 4 Max，2026-11-19，基线 commit 6757b43）
 
