@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Xcode MCP autoload",
-    "description": "Mounts Xcode's MCP server into Sessions whose working directory is inside an Xcode project, and leaves every other Session without Xcode tools."
+    "description": "Mounts Xcode's MCP server and official skills into Sessions whose working directory is inside an Xcode project, and leaves every other Session without Xcode tools or skills."
   }
 }

@@ -11,6 +11,7 @@ describe('Config', () => {
       args: ['mcpbridge'],
       env: {},
       startupTimeoutMs: 30_000,
+      skills: true,
     })
   })
 
@@ -21,12 +22,14 @@ describe('Config', () => {
       args: ['serve', '--stdio'],
       env: { CUSTOM: 'value' },
       startupTimeoutMs: 1234,
+      skills: false,
     })).toEqual({
       serverName: 'xcode-preview',
       command: '/usr/local/bin/custom-mcp',
       args: ['serve', '--stdio'],
       env: { CUSTOM: 'value' },
       startupTimeoutMs: 1234,
+      skills: false,
     })
   })
 

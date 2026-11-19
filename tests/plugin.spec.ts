@@ -91,7 +91,7 @@ function autoloader(
   return harnessValue.root.plugin({
     name: 'test-xcode-mcp-autoload',
     inject: ['workingDirectory', 'agents'],
-    apply: (ctx: Context) => startAutoloader(ctx, options.config ?? Config({}), {
+    apply: (ctx: Context) => startAutoloader(ctx, options.config ?? Config({ skills: false }), {
       discoverProjectRoot: options.discover ?? (async () => LOCATION),
       // Tests must not depend on a real Xcode installation (CI has none).
       probeBridge: options.probe ?? (async () => true),
@@ -211,7 +211,7 @@ describe('startAutoloader', () => {
       },
     } as unknown as Fiber & PromiseLike<Fiber>
     await autoloader(h, {
-      config: Config({ startupTimeoutMs: 20 }),
+      config: Config({ startupTimeoutMs: 20, skills: false }),
       mount: () => hung,
     })
     const { agent } = await agentRig(h.root, 'agent-hung')
@@ -246,7 +246,7 @@ describe('startAutoloader', () => {
   it('interrupts an in-flight startup when the plugin is disposed', async () => {
     const h = harness()
     const fiber = autoloader(h, {
-      config: Config({ startupTimeoutMs: 10_000 }),
+      config: Config({ startupTimeoutMs: 10_000, skills: false }),
       mount: () => {
         let rejectStartup: ((error: Error) => void) | undefined
         const inflight = {

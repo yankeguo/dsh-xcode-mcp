@@ -54,13 +54,24 @@
     "@deepseek-ai/cordis": "~4.1.0",
     "@deepseek-ai/dsh-agent": ">=0.2.1-rc.1 <0.3.0",
     "@deepseek-ai/dsh-mcp-client": ">=0.2.1-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-skill": ">=0.2.1-rc.1 <0.3.0",
     "@deepseek-ai/dsh-working-directory": ">=0.2.1-rc.1 <0.3.0",
     "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-skill": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "yaml": "^2.4.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
     "@deepseek-ai/dsh-agent": "0.2.2-rc.5",
     "@deepseek-ai/dsh-mcp-client": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-scope": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-skill": "0.2.2-rc.5",
     "@deepseek-ai/dsh-working-directory": "0.2.2-rc.5",
     "@deepseek-ai/schemastery": "~3.19.0",
     "@types/node": "^24.0.0",
