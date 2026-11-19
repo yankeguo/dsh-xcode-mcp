@@ -5,8 +5,10 @@ name: publish
 # Pushing a `v*` tag (or dispatching this workflow with an existing
 # `release_tag`) installs, typechecks, tests, builds, and STAGES the one
 # publishable package of this repository (@yankeguo/dsh-xcode-mcp, the root
-# package.json) on the npm registry. Staging publishes nothing. A maintainer
-# then approves the staged version locally with:
+# package.json) on the npm registry. Staging publishes nothing. Stable versions
+# stage with the latest dist-tag; prerelease tags (v<version>-rc.N etc.) stage
+# with next, so pushing a tag is the whole trigger for either kind. A
+# maintainer then approves the staged version locally with:
 #
 #   node scripts/promote-release.mjs
 #
@@ -115,12 +117,18 @@ jobs:
             echo "::error::cannot derive a semver version from tag ${RELEASE_TAG} (expected v<version>)"
             exit 1
           fi
+          # Stable versions stage with the latest dist-tag; prereleases
+          # (-rc.N etc.) stage with next so approving them can never replace
+          # the default install. Pushing the tag is the whole trigger.
           if [[ "${release_version}" == *-* ]]; then
-            echo "::error::${RELEASE_TAG} is a prerelease (${release_version}). This workflow stages stable releases with the latest dist-tag only; stage prereleases locally with scripts/stage-release.mjs --dist-tag next (see docs/PUBLISHING.md)."
-            exit 1
+            release_dist_tag="next"
+            echo "::notice::${RELEASE_TAG} is a prerelease (${release_version}); staging with dist-tag next (never latest)."
+          else
+            release_dist_tag="latest"
           fi
           echo "RELEASE_TAG=${RELEASE_TAG}" >> "${GITHUB_ENV}"
           echo "RELEASE_VERSION=${release_version}" >> "${GITHUB_ENV}"
+          echo "RELEASE_DIST_TAG=${release_dist_tag}" >> "${GITHUB_ENV}"
           echo "Release tag ${RELEASE_TAG} verified: ${head_commit} (version ${release_version})"
           echo "### Release ${RELEASE_TAG}" >> "${GITHUB_STEP_SUMMARY}"
           echo "" >> "${GITHUB_STEP_SUMMARY}"
@@ -199,11 +207,12 @@ jobs:
       - name: Stage the package on npm (publishes nothing)
         # This uploads the package as a staged version and prints the stage id.
         # Nothing is public until a maintainer approves it locally with
-        # scripts/promote-release.mjs (npm login + 2FA). No NODE_AUTH_TOKEN and
-        # no NPM_TOKEN: the npm CLI detects GitHub Actions, exchanges the OIDC
-        # token (`id-token: write`) for a short-lived registry token, and
-        # attaches provenance.
-        run: node scripts/stage-release.mjs --version "$RELEASE_VERSION" --dist-tag latest
+        # scripts/promote-release.mjs (npm login + 2FA). The dist-tag comes from
+        # the resolve step: latest for stable versions, next for prereleases.
+        # No NODE_AUTH_TOKEN and no NPM_TOKEN: the npm CLI detects GitHub
+        # Actions, exchanges the OIDC token (`id-token: write`) for a
+        # short-lived registry token, and attaches provenance.
+        run: node scripts/stage-release.mjs --version "$RELEASE_VERSION" --dist-tag "$RELEASE_DIST_TAG"
 
       - name: Release summary and next steps
         # Only after a fully successful staging run: a partial failure must not
@@ -223,7 +232,8 @@ jobs:
             echo "node scripts/promote-release.mjs --version ${RELEASE_VERSION}             # approve + GitHub Release"
             echo '```'
             echo ""
+            echo "- Staged with dist-tag \`${RELEASE_DIST_TAG}\` (stable: latest; prerelease: next). Approval publishes under that tag; a prerelease can never become latest."
             echo "- Approval prompts for the one-time password; npm publishes the package as it is approved."
             echo "- To restage after a fix, re-run this workflow via workflow_dispatch with the SAME \`release_tag\` (\`${RELEASE_TAG}\`); never move or recreate the tag."
-            echo "- The GitHub Release is created/updated by the promote script, not by this workflow."
+            echo "- The GitHub Release is created/updated by the promote script, not by this workflow (prereleases are marked --prerelease --latest=false)."
           } >> "${GITHUB_STEP_SUMMARY}"
