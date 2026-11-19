@@ -427,6 +427,16 @@ check('verify.yml never creates the GitHub Release', !/gh release (?:create|edit
 
 const stageScript = existsSync(join(ROOT, 'scripts', 'stage-release.mjs')) ? readFileSync(join(ROOT, 'scripts', 'stage-release.mjs'), 'utf8') : ''
 check('stage-release.mjs passes --provenance inside GitHub Actions', /--provenance/u.test(stageScript), 'provenance must be attached when staging in CI')
+check('stage-release.mjs defaults prerelease versions to the next dist-tag',
+  /options\.distTag = 'next'/u.test(stageScript),
+  'prerelease versions (-rc.N etc.) must default to --dist-tag next, never latest')
+check('stage-release.mjs rejects an explicit latest dist-tag for prereleases',
+  /options\.distTag === 'latest'/u.test(stageScript) && /prerelease/u.test(stageScript),
+  'a prerelease staged with latest would make npm install resolve to it on approval; reject it')
+const promoteScript = existsSync(join(ROOT, 'scripts', 'promote-release.mjs')) ? readFileSync(join(ROOT, 'scripts', 'promote-release.mjs'), 'utf8') : ''
+check('promote-release.mjs marks prerelease GitHub Releases (--prerelease)',
+  /'--prerelease'/u.test(promoteScript) && /'--prerelease=false'/u.test(promoteScript),
+  'gh release create/edit must mark prerelease versions --prerelease and keep stable releases non-prerelease')
 const trustScript = existsSync(join(ROOT, 'scripts', 'trusted-publishers.sh')) ? readFileSync(join(ROOT, 'scripts', 'trusted-publishers.sh'), 'utf8') : ''
 check('trusted-publishers.sh configures --allow-stage-publish', /TRUST_ARGS=\([^)]*--allow-stage-publish/u.test(trustScript), 'CI needs stage-only trust')
 check('trusted-publishers.sh never grants --allow-publish', !/TRUST_ARGS=\([^)]*--allow-publish\b/u.test(trustScript), 'a publish-only record would let CI publish without human approval')

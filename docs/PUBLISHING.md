@@ -44,7 +44,8 @@ typecheck、test、build、`check:packages`；它不碰 registry，也不需要�
 - npm 账号对 `@yankeguo` scope 有写权限；包已声明 `publishConfig.access: public`。
 - npm 账号已开启 **2FA**：approve / reject 必须交互式输入一次性密码（OTP）。
 - 包必须**已存在于 npm registry**：npm 的 trusted publishing 只对已发布的包生效。
-  **本包尚未首发**，首次发布是一次性手工操作（见下文“新包首次发布”）。
+  若包尚未首发，首次发布是一次性手工操作（见下文“新包首次发布”；本仓库的首发
+  版本是 `0.1.0-rc.1`，dist-tag `next`）。
 - GitHub Actions 运行在 **GitHub-hosted runner**（npm 目前不支持 self-hosted
   runner 的 trusted publishing）。
 - 仓库公开（`yankeguo/dsh-xcode-mcp`）：provenance 需要公开仓库 + 公开包。
@@ -120,10 +121,19 @@ npm trust list @yankeguo/dsh-xcode-mcp
 输出应指向 `publish.yml` / `yankeguo/dsh-xcode-mcp`，且授权动作只包含 staged
 publishing（不允许旧的 `--allow-publish` 直发记录残留）。
 
-## 新包首次发布（一次性手工操作，本包尚未首发）
+## 新包首次发布（一次性手工操作）
 
-npm 的 trusted publishing 要求包**已经存在**于 registry，因此 `0.1.0` 的第一次
-发布只能人工做（此时还没有 trust 配置可匹配，不能用 OIDC）。完整步骤：
+npm 的 trusted publishing 要求包**已经存在**于 registry，因此第一个版本只能人工
+发布（此时还没有 trust 配置可匹配，不能用 OIDC）。首发可以是稳定版，也可以是
+预发布版；**dist-tag 必须与版本形态匹配**：
+
+- 稳定版（`x.y.z`）：`--tag latest`；
+- 预发布版（`x.y.z-rc.N` 等）：`--tag next`，**绝不 latest**。注意 npm 对预发布
+  版本**同样默认 latest**，必须显式传 `--tag next`，否则 `npm install <pkg>`
+  会解析到预发布版本。
+
+下面以首发 `0.1.0-rc.1`（预发布，dist-tag `next`）为例；稳定版首发只需替换
+版本号、并把 `--tag next` 换成 `--tag latest`：
 
 ```sh
 # 0) 发布形态就绪：package.json 已移除 private、含 publishConfig.access=public、
@@ -131,11 +141,11 @@ npm 的 trusted publishing 要求包**已经存在**于 registry，因此 `0.1.0
 pnpm install --frozen-lockfile
 pnpm verify                # typecheck + test + build
 pnpm check:packages        # 单包发布不变式
-pnpm release:dry           # 打包 + npm 预检（不上传）
+pnpm release:dry           # 打包 + npm 预检（不上传；预发布版本自动按 next 预检）
 
 # 1) 写 release notes 并提交推送 main
-#    docs/releases/v0.1.0.md（promote 的硬性前置条件）
-git add -A && git commit -m "release: v0.1.0" && git push origin main
+#    docs/releases/v0.1.0-rc.1.md（promote 的硬性前置条件）
+git add -A && git commit -m "release: v0.1.0-rc.1" && git push origin main
 
 # 2) 现构建并打包（lib/ 被 gitignore，必须现构建）
 pnpm build
@@ -144,34 +154,43 @@ pnpm pack --pack-destination /tmp/dsh-xcode-mcp-first-publish
 
 # 3) 手工发布 tarball（npm 会提示 2FA OTP）。
 #    在中性目录执行，避免 npm 读到仓库里 pnpm 专用的 .npmrc 键。
+#    预发布必须 --tag next；稳定版首发才用 --tag latest。
 cd /tmp/dsh-xcode-mcp-first-publish
 npm login
-npm publish ./*.tgz --access public --tag latest
+npm publish ./*.tgz --access public --tag next
 
-# 4) 回到仓库，配置只允许 staged publishing 的 trusted publisher
+# 4) 回到仓库，配置只允许 staged publishing 的 trusted publisher。
+#    trust 按包配置（repo + 工作流文件名），与版本/dist-tag 无关，
+#    对 rc 与稳定版同样适用，首发后配置一次即可。
 cd /Users/guoyk/Workspace/src/dsh-xcode-mcp
 scripts/trusted-publishers.sh --dry-run
 scripts/trusted-publishers.sh
 scripts/trusted-publishers.sh --list
 
 # 5) 打 tag 并推送（tag 只能由人创建；CI 与 promote 都不会创建 tag）
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
+git tag -a v0.1.0-rc.1 -m "v0.1.0-rc.1"
+git push origin v0.1.0-rc.1
 
 # 6) 用 promote 幂等地补建首个 GitHub Release：
-#    预检发现“0 条 staged 但版本已发布”→ 跳过 approve，只建 Release（--verify-tag）
-node scripts/promote-release.mjs --version 0.1.0
+#    预检发现“0 条 staged 但版本已发布”→ 跳过 approve，只建 Release
+#    （--verify-tag；预发布版本自动标记 --prerelease，且不会成为 Latest）
+node scripts/promote-release.mjs --version 0.1.0-rc.1
 ```
 
-> **预期中的一次红色 CI**：第 5 步推送 `v0.1.0` 会触发 `publish.yml`，它走到 stage
-> 步骤时会因“版本已发布”而失败（`npm stage publish` 不允许覆盖已发布版本）。这是
-> 首发版本特有的预期现象，**无害**：前面的安装/typecheck/test/build/check-packages
-> 全部通过，stage 不会上传任何东西，更不会重复发布。无需处理；从 `0.1.1` 起
-> tag push 触发的 CI 会正常 stage。
+> **预期中的一次红色 CI**：第 5 步推送 tag 会触发 `publish.yml`，它必然失败，
+> 但**无害**（不会 stage 任何东西，更不会发布）。失败点取决于版本形态：
+>
+> - **稳定版首发**：走到 stage 步骤时因“版本已发布”而失败（`npm stage publish`
+>   不允许覆盖已发布版本）；前面的安装/typecheck/test/build/check-packages 全部通过。
+> - **预发布首发**：更早，在 “Resolve and verify the release tag” 一步失败——
+>   CI 设计上只 stage 稳定版（`latest`），prerelease tag 在 tag 门禁被直接拒绝
+>   （见 [`publish.yml`](../.github/workflows/publish.yml)）。
+>
+> 两种情况都无需处理，**不要移动或重建 tag**。之后每个稳定版都走正常的
+> **CI stage → 人工 approve** 流程（下节）；预发布版始终走本地 stage
+> （见“版本与 dist-tag 策略”）。
 
-之后每个新版本都走正常的 **CI stage → 人工 approve** 流程（下节）。
-
-## 发版流程（v0.1.0 之后）
+## 发版流程（首发之后）
 
 ### 1. 准备干净的 main
 
@@ -222,7 +241,8 @@ pnpm release:dry                   # = pnpm build && node scripts/stage-release.
   `cordis.patch.yml`、`locale/en.json`、`locale/zh.json`、`icon.svg`、`LICENSE`、
   `README.md`），且 `src/`、`tests/`、`scripts/`、`node_modules/` 不泄漏进 tarball；
 - 然后以临时目录为 cwd 调用
-  `npm stage publish <tarball> --access public --tag latest --dry-run --force --json`；
+  `npm stage publish <tarball> --access public --tag <dist-tag> --dry-run --force --json`
+  （dist-tag 默认：稳定版 `latest`，预发布版 `next`）；
 - **`--dry-run` 仍会做 registry 的“版本已存在”检查**，所以本地预检加了 `--force`
   跳过该检查（**真实 stage 永远不加 `--force`**）；
 - 输出 `DRY RUN OK` 表示打包与 npm CLI 参数校验通过；dry-run 不验证 registry 状态，
@@ -355,6 +375,12 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
   node scripts/stage-release.mjs --version 0.2.0-rc.1 --dist-tag next
   node scripts/promote-release.mjs --version 0.2.0-rc.1
   ```
+  工具链对预发布有内建保护：`stage-release.mjs` 对 prerelease 版本**默认
+  `next`**（`--dist-tag` 可省略），并**拒绝显式 `--dist-tag latest`**；
+  `promote-release.mjs` 建/改 GitHub Release 时自动按版本形态标记
+  `--prerelease`（create 时同时 `--latest=false`，稳定版 edit 时显式
+  `--prerelease=false`）。手工 `npm publish` tarball 时没有这层保护，
+  必须自己显式传 `--tag next`。
   用户安装时需要显式指定版本（DSH 插件市场按版本安装，不受 dist-tag 影响）。
 - `engines.dsh` 当前为 `>=0.2.1-rc.1 <0.3.0`（实测基准 `0.2.2-rc.5`）；DSH 升级到
   0.3 时需更新该范围并回归。`check-packages.mjs` 会校验该范围不被无意改动。
@@ -371,7 +397,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
 | 参数 / 环境变量 | 说明 |
 | --- | --- |
 | `--version <x.y.z>` | 期望版本；默认根 `package.json` 版本，必须一致，否则失败 |
-| `--dist-tag <tag>` | npm dist-tag，默认 `latest`；不允许写成版本号 |
+| `--dist-tag <tag>` | npm dist-tag；默认稳定版 `latest`、预发布版 `next`；预发布版本显式传 `latest` 会被拒绝；不允许写成版本号 |
 | `--dry-run` | 打包 + `npm stage publish --dry-run --force` 预检，不上传、不创建 stage id |
 | `--no-provenance` | 即使在 GitHub Actions 中也不传 `--provenance` |
 | `GITHUB_ACTIONS=true` | 传 `--provenance`（npm 也会对公开包自动启用 provenance） |
@@ -392,7 +418,11 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
 - approve 由 npm 交互式读取 OTP；失败时给出已公开状态、剩余 staged id、
   `npm stage reject` 与重跑指引；
 - GitHub Release 幂等创建/更新，`--verify-tag` 保证不新建 tag；本地 HEAD 与 tag
-  不一致时只警告（promote 读取 registry 与 notes 文件，不依赖本地构建产物）。
+  不一致时只警告（promote 读取 registry 与 notes 文件，不依赖本地构建产物）；
+- prerelease 版本（`-rc.N` 等）的 GitHub Release 自动标记 `--prerelease`
+  （create 时同时 `--latest=false`）；稳定版 edit 时显式 `--prerelease=false`，
+  幂等重跑不会残留错误的 prerelease 标记。npm dist-tag 本身在 stage/publish
+  时已记录，promote 不改 dist-tag。
 
 ### `scripts/trusted-publishers.sh`（一次性 trust 配置）
 
@@ -521,7 +551,7 @@ PASS/FAIL 清单，任一失败以非零码退出。
 | approve 报 `EOTP` / OTP 错误 | OTP 输错或过期；重跑 `node scripts/promote-release.mjs` 重新输入。也可手工 `npm stage approve <id>` 后重跑 promote（会跳过已批准项） |
 | promote 报 “no staged version and no published version” | CI 未运行或 stage 失败；先跑发布工作流（tag push 或 dispatch 既有 tag），看到 stage id 后再 promote |
 | promote 报 “has N staged records” | 同一版本存在多条 staged 记录：`npm stage view <id> --json` 比较，`npm stage reject` 清掉旧记录后重试 |
-| `Cannot publish over the previously published versions` | 该版本已发布，不能覆盖；升版本后再发（首发 v0.1.0 的 tag push 触发此错误属预期，见“新包首次发布”） |
+| `Cannot publish over the previously published versions` | 该版本已发布，不能覆盖；升版本后再发（稳定版首发的 tag push 触发此错误属预期；预发布首发的红色 CI 更早、发生在 tag 门禁，均见“新包首次发布”） |
 | promote 报 `release tag ... does not exist` | 先把既有 tag push 到 origin；promote 与 CI 都不会创建/移动 tag |
 | promote 报 notes 文件不存在/为空 | 先写 `docs/releases/v<version>.md`，或用 `--notes-file` 指定 |
 | GitHub Release 创建失败 | 包已公开；修好 `gh auth`/网络后重跑 promote，或手工 `gh release create <tag> --verify-tag --title <tag> --notes-file <file>` |
@@ -532,11 +562,15 @@ PASS/FAIL 清单，任一失败以非零码退出。
 ## 发布后的用户安装方式
 
 ```sh
-# CLI
+# CLI（稳定版发布后；省略版本时 npm 解析 latest）
 dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp
 
 # 或在 Web：Plugins → Add plugin → 输入 @yankeguo/dsh-xcode-mcp
 ```
+
+> 只有预发布版本（如首发 `0.1.0-rc.1`，dist-tag `next`）时**没有 `latest`
+> 可用**，必须显式指定版本：
+> `dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.1`。
 
 运行前提：**macOS + Xcode 26 或更新**（`xcrun mcpbridge` 可用，`xcode-select`
 指向该 Xcode），使用工具期间 Xcode 处于运行状态。本插件是纯 TS 实现：发现

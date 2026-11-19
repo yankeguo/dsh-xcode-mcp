@@ -37,7 +37,10 @@
  *
  * Options:
  *   --version <x.y.z>   Expected version (default: root package.json version).
- *   --dist-tag <tag>    npm dist-tag for the staged version (default: latest).
+ *   --dist-tag <tag>    npm dist-tag for the staged version. Default: latest
+ *                       for stable versions, next for prereleases (-rc.N etc.).
+ *                       A prerelease version with an explicit --dist-tag latest
+ *                       is rejected: prereleases must never become latest.
  *   --dry-run           Pack and validate the tarball through the npm CLI
  *                       (`npm stage publish --dry-run --force`): uploads
  *                       nothing and creates no stage id. --force disables
@@ -99,7 +102,9 @@ Usage: node scripts/stage-release.mjs [options]
 Options:
   --version <x.y.z>   Expected version. Default: the root package.json version.
   --dist-tag <tag>    npm dist-tag recorded with the staged version.
-                      Default: latest. Must not look like a version.
+                      Default: latest for stable versions, next for
+                      prereleases (-rc.N etc.). Must not look like a version.
+                      Explicit 'latest' is rejected for prerelease versions.
   --dry-run           Pack and validate the tarball through the npm CLI
                       ('npm stage publish --dry-run --force'): uploads nothing,
                       creates no stage id. --force skips npm's registry
@@ -122,10 +127,10 @@ This script never publishes: it only stages. Approve with
  * Parse process.argv into options, rejecting unknown/incomplete flags with
  * exit code 2.
  * @param {string[]} argv
- * @returns {{version: string | null, distTag: string, dryRun: boolean, noProvenance: boolean}}
+ * @returns {{version: string | null, distTag: string, distTagExplicit: boolean, dryRun: boolean, noProvenance: boolean}}
  */
 function parseArgs (argv) {
-  const options = { version: null, distTag: 'latest', dryRun: false, noProvenance: false }
+  const options = { version: null, distTag: 'latest', distTagExplicit: false, dryRun: false, noProvenance: false }
   for (let index = 0; index < argv.length; index++) {
     const raw = argv[index]
     // Tolerate the conventional end-of-options marker so `pnpm release:* -- --flag`
@@ -154,6 +159,7 @@ function parseArgs (argv) {
         break
       case '--dist-tag':
         options.distTag = takeValue('--dist-tag')
+        options.distTagExplicit = true
         if (!DIST_TAG_PATTERN.test(options.distTag)) throw new UsageError(`--dist-tag must match ${DIST_TAG_PATTERN} and not look like a version (got ${options.distTag})`)
         break
       case '--dry-run':
@@ -455,8 +461,8 @@ function reportFailure (version, staged, error) {
  * @returns {number} process exit code
  */
 function main () {
-  /** @type {{version: string | null, distTag: string, dryRun: boolean, noProvenance: boolean}} */
-  let options = { version: null, distTag: 'latest', dryRun: false, noProvenance: false }
+  /** @type {{version: string | null, distTag: string, distTagExplicit: boolean, dryRun: boolean, noProvenance: boolean}} */
+  let options = { version: null, distTag: 'latest', distTagExplicit: false, dryRun: false, noProvenance: false }
   try {
     options = parseArgs(process.argv.slice(2))
   } catch (error) {
@@ -489,6 +495,19 @@ function main () {
       throw new StageError(`package.json is version ${manifest.version}, but --version says ${expectedVersion}; bump package.json (and sync the lockfile with pnpm install) first`)
     }
     const pkg = { name: manifest.name, version: expectedVersion }
+
+    // Prerelease versions (-rc.N / -alpha.N / ...) must never become latest:
+    // npm records the dist-tag at publish/approve time, and a prerelease staged
+    // with latest would make `npm install <pkg>` resolve to it on approval.
+    // Default them to next; an explicit --dist-tag latest is a hard error.
+    const prerelease = expectedVersion.includes('-')
+    if (prerelease && options.distTagExplicit && options.distTag === 'latest') {
+      throw new StageError(
+        `${pkg.name}@${expectedVersion} is a prerelease; --dist-tag latest is not allowed for prereleases.\n` +
+        'Use --dist-tag next (the default for prerelease versions) so a stable release keeps owning latest.'
+      )
+    }
+    if (prerelease && !options.distTagExplicit) options.distTag = 'next'
 
     // lib/ is gitignored: a release must pack freshly built output, never a
     // stale or absent lib/. The CI workflow and `pnpm release:dry` build first.

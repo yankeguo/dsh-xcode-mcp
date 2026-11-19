@@ -26,7 +26,9 @@
  *      one-time password interactively. Stops at the first failure and prints
  *      what remains staged.
  *   3. Create or update the GitHub Release idempotently (gh release
- *      view/edit/create --verify-tag).
+ *      view/edit/create --verify-tag). Prerelease versions (-rc.N etc.) are
+ *      marked --prerelease (and never --latest); stable releases are explicitly
+ *      kept non-prerelease on edit.
  *
  * Usage:
  *   node scripts/promote-release.mjs [options]
@@ -432,14 +434,17 @@ function approveStage (stageId, neutralDir) {
 
 /**
  * Idempotently create or update the GitHub Release for an existing tag.
- * @param {{repo: string, tag: string, notesFile: string, neutralDir: string, releaseExists: boolean, version: string}} options
+ * Prerelease versions are marked --prerelease (and --latest=false on create);
+ * edits of stable releases pass --prerelease=false so a stale prerelease flag
+ * cannot survive an idempotent re-run.
+ * @param {{repo: string, tag: string, notesFile: string, neutralDir: string, releaseExists: boolean, version: string, prerelease: boolean}} options
  * @returns {'created' | 'updated'}
  */
 function ensureRelease (options) {
-  const { repo, tag, notesFile, neutralDir, releaseExists } = options
+  const { repo, tag, notesFile, neutralDir, releaseExists, prerelease } = options
   const args = releaseExists
-    ? ['release', 'edit', tag, '--repo', repo, '--title', tag, '--notes-file', notesFile, '--verify-tag']
-    : ['release', 'create', tag, '--repo', repo, '--title', tag, '--notes-file', notesFile, '--verify-tag']
+    ? ['release', 'edit', tag, '--repo', repo, '--title', tag, '--notes-file', notesFile, '--verify-tag', prerelease ? '--prerelease' : '--prerelease=false']
+    : ['release', 'create', tag, '--repo', repo, '--title', tag, '--notes-file', notesFile, '--verify-tag', ...(prerelease ? ['--prerelease', '--latest=false'] : [])]
   const result = run('gh', args, { cwd: neutralDir, stdio: 'inherit' })
   assertSpawned(result, 'gh')
   if (result.status !== 0) {
@@ -455,7 +460,7 @@ function ensureRelease (options) {
 /**
  * Print the phase-1 plan in human-readable form.
  * @param {Array<any>} results
- * @param {{version: string, tag: string, repo: string, notesFile: string, releaseExists: boolean}} context
+ * @param {{version: string, tag: string, repo: string, notesFile: string, releaseExists: boolean, prerelease: boolean}} context
  */
 function printPlan (results, context) {
   console.log('')
@@ -471,7 +476,8 @@ function printPlan (results, context) {
     }
   }
   step++
-  console.log(`  ${step}. ${context.releaseExists ? 'update' : 'create'} GitHub Release ${context.tag} from ${context.notesFile.replace(`${ROOT}/`, '')} (--verify-tag)`)
+  const releaseMark = context.prerelease ? ' (--verify-tag, marked prerelease, not latest)' : ' (--verify-tag)'
+  console.log(`  ${step}. ${context.releaseExists ? 'update' : 'create'} GitHub Release ${context.tag} from ${context.notesFile.replace(`${ROOT}/`, '')}${releaseMark}`)
 }
 
 /**
@@ -570,6 +576,9 @@ function main () {
       throw new PromoteError(`package.json is version ${manifest.version}, but --version says ${version}; promote exactly the version that was staged`)
     }
     const tag = options.releaseTag ?? `v${version}`
+    // Prerelease versions (-rc.N etc.) get a GitHub Release marked prerelease;
+    // the npm dist-tag itself was recorded at stage/publish time (next).
+    const prerelease = version.includes('-')
     const pkg = { name: manifest.name, version }
 
     // Neutral directory: npm must not read the repository's pnpm-only .npmrc.
@@ -580,7 +589,7 @@ function main () {
 
     console.log(options.listOnly
       ? `promote-release: LIST ONLY — version ${version}`
-      : `promote-release: version ${version}, tag ${tag}, repo ${repo}`)
+      : `promote-release: version ${version}${prerelease ? ' (prerelease)' : ''}, tag ${tag}, repo ${repo}`)
     console.log(`npm ${npmState.npmVersion} as ${npmState.user}`)
     console.log('')
 
@@ -631,7 +640,7 @@ function main () {
       }
     }
 
-    printPlan(results, { version, tag, repo, notesFile, releaseExists: ghState.releaseExists })
+    printPlan(results, { version, tag, repo, notesFile, releaseExists: ghState.releaseExists, prerelease })
     if (options.dryRun) {
       console.log('')
       console.log('DRY RUN: nothing was approved and no GitHub Release was created or updated.')
@@ -659,7 +668,7 @@ function main () {
     }
 
     const releaseAction = ensureRelease({
-      repo, tag, notesFile, neutralDir, releaseExists: ghState.releaseExists, version,
+      repo, tag, notesFile, neutralDir, releaseExists: ghState.releaseExists, version, prerelease,
     })
     console.log('')
     console.log(`GitHub Release ${tag} ${releaseAction}.`)
