@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -100,6 +100,42 @@ describe('findXcodeProjectRoot', () => {
     const root = await temporaryDirectory()
     await project(root, 'Zeta.xcodeproj')
     await project(root, 'Alpha.xcodeproj')
+
+    await expect(findXcodeProjectRoot(root)).resolves.toEqual({ root, project: 'Alpha.xcodeproj' })
+  })
+
+  it('recognizes a symlinked project directory', async () => {
+    const root = await temporaryDirectory()
+    const elsewhere = join(root, 'Elsewhere')
+    await project(elsewhere, 'Real.xcodeproj')
+    const workspace = join(root, 'Workspace')
+    await mkdir(workspace, { recursive: true })
+    await symlink(join(elsewhere, 'Real.xcodeproj'), join(workspace, 'Linked.xcodeproj'), 'dir')
+
+    await expect(findXcodeProjectRoot(workspace)).resolves.toEqual({ root: workspace, project: 'Linked.xcodeproj' })
+  })
+
+  it('does not treat a symlink to a file as a project directory', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'target.txt'), 'not a project')
+    await symlink(join(root, 'target.txt'), join(root, 'Fake.xcodeproj'), 'file')
+
+    await expect(findXcodeProjectRoot(root)).resolves.toBeUndefined()
+  })
+
+  it('ignores a dangling project symlink', async () => {
+    const root = await temporaryDirectory()
+    await symlink(join(root, 'missing'), join(root, 'Broken.xcodeproj'), 'dir')
+
+    await expect(findXcodeProjectRoot(root)).resolves.toBeUndefined()
+  })
+
+  it('keeps the lexicographic order across real and symlinked projects', async () => {
+    const root = await temporaryDirectory()
+    const elsewhere = join(root, 'Elsewhere')
+    await project(elsewhere, 'Real.xcodeproj')
+    await project(root, 'Zeta.xcodeproj')
+    await symlink(join(elsewhere, 'Real.xcodeproj'), join(root, 'Alpha.xcodeproj'), 'dir')
 
     await expect(findXcodeProjectRoot(root)).resolves.toEqual({ root, project: 'Alpha.xcodeproj' })
   })

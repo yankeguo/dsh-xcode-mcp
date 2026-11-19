@@ -3,9 +3,10 @@
  *
  * The plugin reads each live Agent's working directory, walks upward to the
  * nearest directory containing a `*.xcodeproj` directory, and connects one
- * `mcp-client` instance through that Agent's own Context. Tools therefore
- * appear only for that Agent (`mcp__xcode__*`) and the child process is
- * disconnected when the Agent is disposed.
+ * `mcp-client` instance through that Agent's own Context, starting
+ * `xcrun mcpbridge` (Xcode 26+) with the project root as its working
+ * directory. Tools therefore appear only for that Agent (`mcp__xcode__*`)
+ * and the child process is disconnected when the Agent is disposed.
  *
  * Discovery stops at the first ancestor carrying `.git` (after checking that
  * ancestor itself) or at the filesystem root, whichever comes first.
@@ -13,12 +14,12 @@
  * @module @yankeguo/dsh-xcode-mcp
  */
 
+import { execFile } from 'node:child_process'
 import { readdir, stat } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import type { Context, Fiber } from '@deepseek-ai/cordis'
 import * as McpClient from '@deepseek-ai/dsh-mcp-client'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import z from '@deepseek-ai/schemastery'
 
@@ -28,17 +29,26 @@ export const name = 'xcode-mcp-autoload'
 /** Services that must exist before the plugin activates. */
 export const inject = ['agents', 'workingDirectory']
 
-/** Default executable: the user's uv installation. */
-const DEFAULT_COMMAND = '/Users/guoyk/.local/bin/uv'
+/** Default executable: macOS ships `xcrun` at /usr/bin/xcrun. */
+const DEFAULT_COMMAND = 'xcrun'
 
-/** Default launcher that execs `xcrun mcpbridge` inside an Xcode project. */
-const DEFAULT_ARGS = ['run', '/Users/guoyk/Workspace/dsh/scripts/xcode-mcp.py']
+/** Default arguments: Xcode 26+ exposes its MCP server through `mcpbridge`. */
+const DEFAULT_ARGS = ['mcpbridge']
 
-/** Default environment for uv; the official PyPI index times out on this machine. */
-const DEFAULT_ENV = { UV_DEFAULT_INDEX: 'https://pypi.tuna.tsinghua.edu.cn/simple' }
+/** Default environment: none; `mcpbridge` needs no extra variables. */
+const DEFAULT_ENV: Record<string, string> = {}
+
+/** Upper bound for the `xcrun --find mcpbridge` availability probe. */
+const PROBE_TIMEOUT_MS = 10_000
 
 /** Default allowance for one connection attempt plus its initial tool sync. */
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000
+
+/**
+ * Largest delay Node's `setTimeout` accepts; bigger values overflow and fire
+ * immediately, which would turn a generous watchdog into an instant failure.
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 /** Marker directory that ends the upward walk. */
 const REPOSITORY_MARKER = '.git'
@@ -46,7 +56,7 @@ const REPOSITORY_MARKER = '.git'
 /** Suffix of an Xcode project directory. */
 const XCODE_PROJECT_SUFFIX = '.xcodeproj'
 
-/** Settings for the Xcode MCP client, with defaults for this machine. */
+/** Settings for the Xcode MCP client. */
 export interface Config {
   /** Model-facing MCP namespace; tools appear as `mcp__<serverName>__*`. */
   serverName: string
@@ -57,9 +67,10 @@ export interface Config {
   /** Extra environment variables merged over the scrubbed ambient environment. */
   env: Record<string, string>
   /**
-   * Watchdog for the initial MCP connection and tool sync, in milliseconds.
-   * The plugin's own timeout keeps compatibility with `mcp-client` releases
-   * that predate `startupTimeoutMs`.
+   * Watchdog for the initial MCP connection and tool sync, in milliseconds
+   * (1 to 2147483647, Node's maximum timer delay). The plugin's own timeout
+   * keeps compatibility with `mcp-client` releases that predate
+   * `startupTimeoutMs`.
    */
   startupTimeoutMs: number
 }
@@ -70,7 +81,7 @@ export const Config: z<Partial<Config>, Config> = z.object({
   command: z.string().pattern(/\S/).default(DEFAULT_COMMAND),
   args: z.array(String).default([...DEFAULT_ARGS]),
   env: z.dict(String).default({ ...DEFAULT_ENV }),
-  startupTimeoutMs: z.number().min(1).default(DEFAULT_STARTUP_TIMEOUT_MS),
+  startupTimeoutMs: z.number().min(1).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STARTUP_TIMEOUT_MS),
 })
 
 /** Discovered project root and the project directory that identified it. */
@@ -81,10 +92,12 @@ export interface XcodeProjectLocation {
   project: string
 }
 
-/** Test seam for the filesystem discovery and the MCP mount. */
+/** Test seam for the filesystem discovery, the bridge probe, and the MCP mount. */
 export interface AutoloaderOptions {
   /** Replace the filesystem walk (defaults to {@link findXcodeProjectRoot}). */
   discoverProjectRoot?: (cwd: string) => Promise<XcodeProjectLocation | undefined>
+  /** Replace the `mcpbridge` availability probe (defaults to {@link probeMcpBridge}). */
+  probeBridge?: (command: string, args: string[]) => Promise<boolean>
   /** Replace the per-Agent mount (defaults to `agent.ctx.plugin(McpClient, …)`). */
   mount?: (agent: Agent, config: McpClient.Config) => Fiber & PromiseLike<Fiber>
 }
@@ -141,6 +154,7 @@ export async function startAutoloader(
   options: AutoloaderOptions = {},
 ): Promise<void> {
   const discover = options.discoverProjectRoot ?? findXcodeProjectRoot
+  const probe = options.probeBridge ?? probeMcpBridge
   const mount = options.mount ?? ((agent: Agent, mountConfig: McpClient.Config) => agent.ctx.plugin(McpClient, mountConfig))
   const lifecycle = new AbortController()
   const seen = new WeakSet<Agent>()
@@ -170,6 +184,20 @@ export async function startAutoloader(
         return
       }
       if (location === undefined || scope.aborted) return
+      // Fail fast with a clear diagnostic when the default bridge is missing,
+      // instead of letting the MCP client log connection failures and retries.
+      let available: boolean
+      try {
+        available = await probe(config.command, config.args)
+      } catch (error) {
+        if (!scope.aborted) ctx.logger.warn(`xcode-mcp-autoload: cannot probe ${config.command} for agent ${agent.id}`, error)
+        return
+      }
+      if (!available) {
+        ctx.logger.warn(`xcode-mcp-autoload: ${config.command} cannot find mcpbridge (requires Xcode 26+ with xcode-select pointing at it); skipping the Xcode MCP mount for agent ${agent.id}`)
+        return
+      }
+      if (scope.aborted) return
       let mounted: (Fiber & PromiseLike<Fiber>) | undefined
       let release: (() => void) | undefined
       try {
@@ -184,9 +212,16 @@ export async function startAutoloader(
         release?.()
         if (mounted !== undefined) {
           fibers.delete(mounted)
-          await mounted.dispose()
+          // A failing cleanup must not escape: this task backs the serial
+          // `agent/created` listener, whose rejection would fail Agent
+          // registration itself.
+          try {
+            await mounted.dispose()
+          } catch (cleanupError) {
+            ctx.logger.warn(`xcode-mcp-autoload: cannot dispose the failed MCP mount for agent ${agent.id}`, cleanupError)
+          }
         }
-        if (!scope.aborted) ctx.logger.warn(`xcode-mcp-autoload: cannot mount the Xcode MCP server for agent ${agent.id}`, error)
+        if (!scope.aborted) ctx.logger.warn(`xcode-mcp-autoload: cannot mount the Xcode MCP server for agent ${agent.id} at ${location.root}`, error)
       }
     })()
     pending.add(task)
@@ -201,6 +236,8 @@ export async function startAutoloader(
     lifecycle.abort()
     // Dispose synchronously known fibers first so an in-flight startup is
     // interrupted instead of delaying plugin unload until the watchdog fires.
+    // Cordis defers effect teardown until apply settles, so a startup still in
+    // flight during the initial backfill is bounded by the watchdog instead.
     await Promise.allSettled([...fibers].map(fiber => fiber.dispose()))
     await Promise.allSettled([...pending])
     await Promise.allSettled([...fibers].map(fiber => fiber.dispose()))
@@ -210,7 +247,9 @@ export async function startAutoloader(
     await attach(agent, signal)
     return undefined
   })
-  for (const agent of ctx.agents.list()) await attach(agent)
+  // Inspect existing Agents concurrently: one slow startup must not delay the
+  // others, and activation time is the slowest mount, not their sum.
+  await Promise.allSettled(ctx.agents.list().map(agent => attach(agent)))
 }
 
 /**
@@ -223,7 +262,32 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   await startAutoloader(ctx, config)
 }
 
-/** Lexicographically first `*.xcodeproj` directory inside one directory, if any. */
+/**
+ * Whether the configured launcher can reach Xcode's MCP bridge.
+ *
+ * Only the default `xcrun mcpbridge` launcher is probed (`xcrun --find
+ * mcpbridge`, bounded by {@link PROBE_TIMEOUT_MS}); a custom command/args pair
+ * is trusted as configured and left for the MCP client to validate. A failed
+ * probe skips the mount with a diagnostic instead of producing connection
+ * failure noise; it never fails Agent creation.
+ * @param command - configured executable.
+ * @param args - configured arguments.
+ * @returns `true` when the bridge is available or no probe applies.
+ */
+export async function probeMcpBridge(command: string, args: string[]): Promise<boolean> {
+  if (basename(command) !== 'xcrun' || args[0] !== 'mcpbridge') return true
+  return new Promise<boolean>((resolvePromise) => {
+    execFile(command, ['--find', 'mcpbridge'], { timeout: PROBE_TIMEOUT_MS }, (error) => {
+      resolvePromise(error === null)
+    })
+  })
+}
+
+/**
+ * Lexicographically first `*.xcodeproj` directory inside one directory, if any.
+ * Symlinked project directories count as directories (the link target is
+ * stat-ed); unreadable directories are treated as project-less.
+ */
 async function firstXcodeProject(directory: string): Promise<string | undefined> {
   let entries
   try {
@@ -231,10 +295,23 @@ async function firstXcodeProject(directory: string): Promise<string | undefined>
   } catch {
     return undefined
   }
-  return entries
-    .filter(entry => entry.isDirectory() && entry.name.endsWith(XCODE_PROJECT_SUFFIX))
+  const candidates = entries
+    .filter(entry => (entry.isDirectory() || entry.isSymbolicLink()) && entry.name.endsWith(XCODE_PROJECT_SUFFIX))
     .map(entry => entry.name)
-    .sort()[0]
+    .sort()
+  for (const name of candidates) {
+    if (await isDirectory(join(directory, name))) return name
+  }
+  return undefined
+}
+
+/** Whether a path resolves to a directory, following symbolic links. */
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 /** Whether a path exists, regardless of its type. */
