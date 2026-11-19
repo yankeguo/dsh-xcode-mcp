@@ -219,7 +219,7 @@ pnpm install                # 同步 lockfile（纯版本号 bump 通常不改�
 
 ### 3. 写 release notes（promote 的硬性前置条件）
 
-新建 `docs/releases/v<VERSION>.md`（参考 [`v0.1.0.md`](releases/v0.1.0.md)）。
+新建 `docs/releases/v<VERSION>.md`（参考 [`v0.1.0-rc.1.md`](releases/v0.1.0-rc.1.md)）。
 `scripts/promote-release.mjs` 会用它作为 GitHub Release 正文，**文件不存在或为空时
 拒绝批准**（避免包已公开却没有发布说明）。
 
