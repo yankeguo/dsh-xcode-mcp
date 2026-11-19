@@ -189,9 +189,10 @@ node scripts/promote-release.mjs --version 0.1.0-rc.1
 > 该 commit 早于支持 prerelease staging 的 `44ea5b1`。因此推送 tag 触发的
 > run `44498942152` 在 “Resolve and verify the release tag” 步骤就失败（当时的
 > workflow 只支持稳定版），后续 install/typecheck/test/build/check-packages/
-> stage 全部跳过；没有 stage 或发布任何东西。用 workflow_dispatch 重跑该 tag
-> 也会 checkout tag 处的旧 workflow，仍在同一处失败；且该版本已在第 3 步手工
-> 发布，不能再 stage。**不要移动或重建 tag。**
+> stage 全部跳过；没有 stage 或发布任何东西。workflow_dispatch 的行为不同：
+> 它使用 **main 上当前的 workflow YAML**，只把工作树 checkout 到指定 tag；
+> Resolve/版本校验会通过，随后 stage 会因 `0.1.0-rc.1` 已发布而失败。**不要
+> 移动或重建 tag。**
 >
 > 第 6 步的 promote 只用于补建 GitHub Release：预检发现“0 条 staged、版本已
 > 发布”时会跳过 approve，仅创建 `--prerelease --latest=false` 的 Release。

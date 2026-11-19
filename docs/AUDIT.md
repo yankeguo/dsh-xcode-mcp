@@ -46,12 +46,17 @@ teardown 表述同步修正。
 `config.env`（典型如 `DEVELOPER_DIR`）只作用于 `mcpbridge`，导出仍用 PATH 上的
 `xcrun`，多 Xcode 安装时 skills 与 MCP 可能来自不同 Xcode。
 **修复**：probe 与 export 接收同一套 command/env；自定义路径 basename 为 `xcrun`
-时复用之，否则仍用系统 `xcrun`；新增 probe/export 的 env 测试。
+时复用之，否则仍用系统 `xcrun`。除 probe/export 的直接单元测试外，新增
+`startAutoloader` 集成测试，验证自定义 xcrun 路径复用、非 xcrun launcher 回退
+system xcrun，以及 `config.env` 同时到达 probe 与 export。
 
 **M5. 不可读的 skill 缓存被当成空目录/空 bundle，静默无日志。**
 `readdir`/`readFile` 的所有错误都被吞掉，只有 YAML/frontmatter 解析错误才 warn。
-**修复**：只有 `ENOENT`（以及读文件时的 `ENOTDIR`）视为正常缺失；其余错误
-warn，并区分“不可读或格式错误”；新增 EISDIR、cache 路径为文件的测试。
+**修复**：`listExportedSkills` 只把 `ENOENT`（以及读文件时的 `ENOTDIR`）视为
+正常缺失，其余错误 warn；`loadExportedSkill` 同样只把 `ENOENT`/`ENOTDIR` 当作
+缺失，EACCES/EISDIR 等真实读取错误经 provider logger warn 后返回 `undefined`，
+不再静默。新增 list 的 EISDIR/cache 路径为文件测试，以及 get 路径的 EISDIR、
+EACCES 测试。
 
 **M6. README 的 Xcode 授权流程与实际行为不符。**
 Xcode 27.2 中仅“连接”不会触发授权；除 `XcodeOpenWorkspace`/`XcodeNewProject`
@@ -85,6 +90,8 @@ cordis 4.0.5 / schemastery 3.18.5。子代理在 rc1 包集下跑通 typecheck �
 
 - **L1. 仅 macOS 的 bundle 未声明平台。** 加 `dsh.bundle.platforms: ["darwin"]`，
   避免 Linux/Windows 安装一个必然无效的 bundle；`check-packages` 增加不变式。
+  注意 DSH 0.2.1-rc.1 不读取该字段（仍靠 xcrun probe 兜底），从 0.2.2+ 才由
+  Host 强制；详见 [`COMPATIBILITY.md`](COMPATIBILITY.md)。
 - **L2. README 的 `docs/PUBLISHING.md` 相对链接在 npm tarball 中失效**
   （`docs/` 不在 `files`）；改为 GitHub 绝对链接。
 - **L3. 失败导出的缓存表述过强。** `--replace-existing` 是逐项替换，失败时
@@ -111,7 +118,8 @@ cordis 4.0.5 / schemastery 3.18.5。子代理在 rc1 包集下跑通 typecheck �
   会残留”，避免“no project, no mount”被误读为动态保证）。
 - **engines.node 保持 >=24.9**：rc1 的 DSH 允许 Node ^22.19，本插件代码也未使用
   24.9 专属 API，但没有在 Node 22 上跑过完整测试；为避免扩大未验证支持面，保持
-  rc5 基线。DSH rc1 的 API 兼容性由 peer 范围覆盖，Node 版本仍是独立要求。
+  rc5 基线。DSH rc1 的 API 兼容性由 peer 范围覆盖，Node 版本仍是独立要求；
+  详见 [`COMPATIBILITY.md`](COMPATIBILITY.md)“Node 22.19：未验证”。
 - **probe 不随 abort 被杀**：`xcrun --find mcpbridge` 有 10s 上限，实测约 3.7ms；
   为它增加 signal 贯穿会扩大测试 seam，收益小。看门狗路径已 abort-aware。
 - **插件激活与“已在派发中”的 `agent/created` 的残余竞态**：Cordis `serial` 在
@@ -145,7 +153,7 @@ cordis 4.0.5 / schemastery 3.18.5。子代理在 rc1 包集下跑通 typecheck �
 
 ### 验证
 
-- `pnpm install --frozen-lockfile`、`pnpm verify`（61 tests / 4 files）、
+- `pnpm install --frozen-lockfile`、`pnpm verify`（68 tests / 4 files）、
   `pnpm check:packages`（136 checks）全绿。
 - 真实环境：Xcode 27.2 的 `xcrun mcpbridge` 握手 54 tools；3 个并发 bridge 均
   54 tools；`xcrun agent skills export` 11 skills；导出的 `when_to_use` 已由新增
@@ -153,6 +161,30 @@ cordis 4.0.5 / schemastery 3.18.5。子代理在 rc1 包集下跑通 typecheck �
 - `pnpm pack` tarball 内容检查（lib/cordis/locale/icon/README/LICENSE，无
   src/tests/scripts/node_modules）。
 - 推送后 `verify.yml` 的 run URL / conclusion 见本次交付回复。
+
+### 复核 follow-up（2026-11-19）
+
+二次只读复核对 `8460647..5c388dd` 的后续处置：
+
+- **M5 load 路径**：`loadExportedSkill` 只把 `ENOENT`/`ENOTDIR` 当缺失，其余
+  错误经 provider logger warn 后返回 `undefined`；补 get 的 EISDIR/EACCES 测试。
+- **M4 集成覆盖**：新增 `startAutoloader` 测试，覆盖自定义 xcrun 复用、非 xcrun
+  回退 system xcrun、`config.env` 同时到达 probe/export。
+- **平台字段**：确认 DSH 0.2.1-rc.1 忽略 `dsh.bundle.platforms`，不改
+  `engines.dsh`；文档明确 rc.1 靠 probe 兜底、0.2.2+ 才强制。
+- **创建取消**：共享 attach task 引入 per-task `AbortController`；creation signal
+  abort 时同时中止 task，新增“取消后不再 mount”测试。
+- **README 过度承诺**：改写创建等待、teardown、env/xcrun 一致性的表述，区分
+  mount handshake 看门狗与无界 discovery/10s probe。
+- **workflow_dispatch 叙述**：改为“使用 main 当前 workflow、只 checkout tag
+  worktree；Resolve 会通过，stage 因版本已发布失败”，区别于 rc.1 tag push 的
+  旧 workflow Resolve 失败。
+- **Node 兼容性**：新增 [`COMPATIBILITY.md`](COMPATIBILITY.md)，明确 rc.1 兼容
+  仅在 Node >=24.9 下验证，Node 22.19 未验证；不改 `engines.node`。
+
+新增 7 个测试（61 → 68），包括 M4 集成传递、取消后不 mount、get 读取错误、
+provider warning/invalidator 清理、export 中途卸载、`defaultSkillsCacheDir()`
+默认参数。
 
 ## 初版审计（Qwen 4 Max，2026-11-19，基线 commit 6757b43）
 
