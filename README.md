@@ -42,7 +42,7 @@ DSH has no workspace-level MCP configuration: a profile-level `mcp-client` entry
 ## Requirements
 
 - macOS with Xcode 26 or newer (`xcrun --find mcpbridge` must succeed), and Xcode running while the Session uses the tools.
-- DSH `>=0.2.1-rc.1 <0.3.0` (checked against tags `dsh-v0.2.1-rc.1` through `dsh-v0.2.2-rc.5`; runtime baseline `0.2.2-rc.5`).
+- DSH `>=0.2.1-rc.1 <0.3.0` (API surface checked against tags `dsh-v0.2.1-rc.1` and `dsh-v0.2.2-rc.5`; runtime baseline `0.2.2-rc.5`).
 
 ## Installation
 
