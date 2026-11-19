@@ -24,7 +24,9 @@
  *      the first irreversible approval.
  *      A prerelease version (-rc.N etc.) whose staged record carries the
  *      latest dist-tag is refused before approval: publishing it would make
- *      the prerelease the default install. `--tag latest` with a prerelease
+ *      the prerelease the default install. When a staged record carries a
+ *      tag, it must equal --tag (a mismatch is refused before approval); a
+ *      missing tag is left to npm's default. `--tag latest` with a prerelease
  *      version fails even earlier, before any registry read or npm login check.
  *   2. Approve the staged id with inherited stdio, so npm can prompt for the
  *      one-time password interactively. Stops at the first failure and prints
@@ -101,8 +103,9 @@ Options:
                        already exist on the remote; this script never creates,
                        moves, or deletes tags.
   --tag <dist-tag>     Expected npm dist-tag for this promotion. Default: next
-                       for a prerelease, latest for a stable version. A
-                       prerelease with latest is refused before any registry
+                       for a prerelease, latest for a stable version. Records
+                       staged with a different tag are refused before approval;
+                       a prerelease with latest is refused before any registry
                        read; approval would make it the default install.
   --repo <owner/repo>  GitHub repository. Default: the origin git remote,
                        falling back to ${DEFAULT_REPO}.
@@ -717,6 +720,25 @@ function main () {
           'Nothing was approved.'
         )
       }
+    }
+
+    // A staged record's recorded dist-tag must match the expected tag:
+    // approval publishes under the tag recorded at stage time, so a mismatch
+    // would publish under a tag this promotion did not intend. A record
+    // without a tag is left to npm's default (latest); stable versions may
+    // omit it. Prereleases without a tag are still caught above as latest.
+    const misStaged = results.filter(result =>
+      result.status === 'staged' && result.item?.tag !== undefined && result.item.tag !== distTag
+    )
+    if (misStaged.length > 0) {
+      throw new PromoteError(
+        `staged record(s) carry an unexpected dist-tag (expected ${distTag}):\n` +
+        misStaged.map(result => `  ${result.pkg.name}@${version}: staged with tag ${result.item.tag} (stageId=${result.stageId})`).join('\n') + '\n' +
+        'The dist-tag is recorded when staging and cannot be changed. Reject and stage again with the expected tag:\n' +
+        misStaged.map(result => `  npm stage reject ${result.stageId}`).join('\n') + '\n' +
+        `  node scripts/stage-release.mjs --version ${version} --dist-tag ${distTag}\n` +
+        'Nothing was approved.'
+      )
     }
 
     const notesFile = resolveNotesFile(options.notesFile, version)
