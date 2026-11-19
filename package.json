@@ -1,6 +1,6 @@
 {
   "name": "@yankeguo/dsh-xcode-mcp",
-  "version": "0.1.0-rc.2",
+  "version": "0.1.0-rc.3",
   "description": "Mount the Xcode MCP server into DeepSeek Harness sessions whose working directory is inside an Xcode project.",
   "license": "MIT",
   "type": "module",

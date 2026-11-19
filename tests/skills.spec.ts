@@ -93,8 +93,8 @@ async function rig(): Promise<Rig> {
           probeBridge: async () => true,
           skillsCacheDir: cacheDir,
           exportSkills: options.exportSkills ?? (async (dir) => {
-            exportCalls += 1
             await writeSkill(dir, 'swiftui-specialist', VALID_FRONTMATTER)
+            exportCalls += 1
           }),
           mount(agent, config) {
             mounted.push(config)
@@ -293,6 +293,7 @@ describe('embedded Xcode skills', () => {
       },
     })
     await r.autoloader()
+    await vi.waitFor(() => expect(r.exportCalls()).toBe(1))
     const { agent, key } = await r.scopedAgent('agent-get-unreadable')
     await r.root.serial('agent/created', { agent, source: 'startup' })
     await vi.waitFor(async () => {

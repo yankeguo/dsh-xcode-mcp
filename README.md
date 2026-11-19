@@ -62,7 +62,10 @@ Installing the bundle is enough — no manual skill installation. Xcode 26 ships
 ## Installation
 
 ```sh
-# CLI (desktop profile). The currently published rc is 0.1.0-rc.1:
+# CLI (desktop profile). After rc.3 approval, pin the exact release:
+dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.3
+
+# Current published rc / latest is still 0.1.0-rc.1:
 dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.1
 
 # Unversioned install follows latest, also 0.1.0-rc.1:
@@ -73,10 +76,12 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp
 
 > Current registry state (2026-11-19): there is no stable release yet. `latest`
 > and `next` both point at `0.1.0-rc.1`; `0.0.0-stage` is an earlier probe
-> version. `0.1.0-rc.2` was staged by its tag workflow, but the staged record
-> was rejected, so it was never published. Pin `@0.1.0-rc.1` until a later rc
-> is staged and approved; a maintainer should move `latest` to a stable
-> version once one exists.
+> version. `0.1.0-rc.2` was staged but its staged record was rejected, so it was
+> never published. `0.1.0-rc.3` is the current candidate: its tag workflow
+> stages it with `next`, and it becomes installable only after a successful
+> stage and maintainer approval. `latest` remains `0.1.0-rc.1`. Pin
+> `@0.1.0-rc.3` after approval, `@0.1.0-rc.1` until then; a maintainer should
+> move `latest` to a stable version once one exists.
 
 For local development, install this checkout as a linked bundle through DSH's plugin manager (`install_bundle` pointed at this directory); run `pnpm build` first so `lib/index.js` exists, and rebuild after source changes.
 
