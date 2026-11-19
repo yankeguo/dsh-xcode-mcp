@@ -44,8 +44,9 @@ typecheck、test、build、`check:packages`；它不碰 registry，也不需要�
 - npm 账号对 `@yankeguo` scope 有写权限；包已声明 `publishConfig.access: public`。
 - npm 账号已开启 **2FA**：approve / reject 必须交互式输入一次性密码（OTP）。
 - 包必须**已存在于 npm registry**：npm 的 trusted publishing 只对已发布的包生效。
-  若包尚未首发，首次发布是一次性手工操作（见下文“新包首次发布”；本仓库的首发
-  版本是 `0.1.0-rc.1`，dist-tag `next`）。
+  若包尚未首发，首次发布是一次性手工操作（见下文“新包首次发布”）。本仓库已经
+  完成首发：更早的 `0.0.0-stage` 探针版本与 `0.1.0-rc.1` 都已公开；目前还没有
+  稳定版，registry 的 `latest` 与 `next` 都指向 `0.1.0-rc.1`。
 - GitHub Actions 运行在 **GitHub-hosted runner**（npm 目前不支持 self-hosted
   runner 的 trusted publishing）。
 - 仓库公开（`yankeguo/dsh-xcode-mcp`）：provenance 需要公开仓库 + 公开包。
@@ -123,6 +124,10 @@ publishing（不允许旧的 `--allow-publish` 直发记录残留）。
 
 ## 新包首次发布（一次性手工操作）
 
+> **本仓库已完成首发**：先发布 `0.0.0-stage`（探针版本），随后发布
+> `0.1.0-rc.1`。以下步骤保留为一次性流程记录；本仓库实际的首发 tag run 见本节
+> 末尾“本仓库首发实况”。新包仍可按此流程首发。
+
 npm 的 trusted publishing 要求包**已经存在**于 registry，因此第一个版本只能人工
 发布（此时还没有 trust 配置可匹配，不能用 OIDC）。首发可以是稳定版，也可以是
 预发布版；**dist-tag 必须与版本形态匹配**：
@@ -130,10 +135,12 @@ npm 的 trusted publishing 要求包**已经存在**于 registry，因此第一�
 - 稳定版（`x.y.z`）：`--tag latest`；
 - 预发布版（`x.y.z-rc.N` 等）：`--tag next`，**绝不 latest**。注意 npm 对预发布
   版本**同样默认 latest**，必须显式传 `--tag next`，否则 `npm install <pkg>`
-  会解析到预发布版本。
+  会解析到预发布版本。发布后仍要 `npm view <pkg> dist-tags` 核对：本仓库当前
+  `latest` 与 `next` 都指向 `0.1.0-rc.1`，说明单靠 `--tag next` 不保证 latest
+  不落到 rc；必要时用 `npm dist-tag add <pkg>@<version> latest` 纠正。
 
-下面以首发 `0.1.0-rc.1`（预发布，dist-tag `next`）为例；稳定版首发只需替换
-版本号、并把 `--tag next` 换成 `--tag latest`：
+下面以当时首发的 `0.1.0-rc.1`（预发布）为例；稳定版首发只需替换版本号、并把
+`--tag next` 换成 `--tag latest`：
 
 ```sh
 # 0) 发布形态就绪：package.json 已移除 private、含 publishConfig.access=public、
@@ -177,20 +184,21 @@ git push origin v0.1.0-rc.1
 node scripts/promote-release.mjs --version 0.1.0-rc.1
 ```
 
-> **预期中的一次红色 CI（仅首个版本如此）**：第 5 步推送 tag 会触发
-> `publish.yml`，它会完整走完 checkout、tag 校验、安装、typecheck、test、build 与
-> check-packages，但**必然在 “Stage the package on npm” 一步失败**：该版本已在
-> 第 3 步手工发布，`npm stage publish` 不允许对已发布版本再 stage。这**无害**：
-> CI 不会 stage 任何东西，更不会发布。稳定版首发与预发布首发都一样，红色点只在
-> stage 步骤；前面的安装/typecheck/test/build/check-packages 全部通过。
+> **本仓库首发实况（2026-11-19）**：`v0.1.0-rc.1` tag 指向 commit `d96f65d`，
+> 该 commit 早于支持 prerelease staging 的 `44ea5b1`。因此推送 tag 触发的
+> run `44498942152` 在 “Resolve and verify the release tag” 步骤就失败（当时的
+> workflow 只支持稳定版），后续 install/typecheck/test/build/check-packages/
+> stage 全部跳过；没有 stage 或发布任何东西。用 workflow_dispatch 重跑该 tag
+> 也会 checkout tag 处的旧 workflow，仍在同一处失败；且该版本已在第 3 步手工
+> 发布，不能再 stage。**不要移动或重建 tag。**
 >
-> 无需处理，**不要移动或重建 tag**。第 6 步的 promote 仍能正确收尾：预检发现
-> “0 条 staged 但版本已发布” → 跳过 approve，只创建 GitHub Release（预发布自动
-> `--prerelease --latest=false`，且不会成为 Latest）。
+> 第 6 步的 promote 只用于补建 GitHub Release：预检发现“0 条 staged、版本已
+> 发布”时会跳过 approve，仅创建 `--prerelease --latest=false` 的 Release。
+> 本仓库的 Release 当前**尚未创建**（本次审计未执行该步骤）。
 >
-> **仅首个版本如此**：包存在于 registry 之后，此后每个 rc 与稳定版都走正常的
-> **CI stage → 人工 approve** 流程（下节）；rc 由 CI 以 `next` stage，稳定版以
-> `latest` stage。
+> 这个红色点与“版本已发布”无关，是 tag commit 与 workflow 版本差；不要把它
+> 当成 stage 失败去重跑。后续新版本从包含 prerelease 支持的 main 打 tag，即可
+> 走正常的 CI stage。
 
 ## 发版流程（首发之后）
 
@@ -231,7 +239,7 @@ pnpm install                # 同步 lockfile（纯版本号 bump 通常不改�
 pnpm install --frozen-lockfile     # 锁文件一致
 pnpm verify                        # typecheck + test + build（lib/ 被 gitignore，必须现构建）
 pnpm check:packages                # 单包不变式：manifest/engines/files/exports/locale/icon/
-                                   #   依赖放置/构建产物/lockfile/CI pin/staged 契约
+                                   #   平台/依赖放置/构建产物/lockfile/CI pin/staged 契约
 pnpm release:dry                   # = pnpm build && node scripts/stage-release.mjs --dry-run
                                    #   本地打包 + npm 预检，不上传、不创建 stage id
 ```
@@ -414,13 +422,19 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
      stage 时记录的 dist-tag。
   手工 `npm publish` tarball（仅首发）时没有这层保护，必须自己显式传 `--tag next`。
   prerelease 的 tag（`v0.2.0-rc.1`）推送到远端即触发 CI stage，也供 Release 的
-  `--verify-tag` 使用。用户安装时需要显式指定版本（DSH 插件市场按版本安装，不受
-  dist-tag 影响）。
+  `--verify-tag` 使用。DSH 插件市场按版本安装，不受 dist-tag 影响；从 npm 安装时
+  建议显式指定版本。
+
 - `engines.dsh` 当前为 `>=0.2.1-rc.1 <0.3.0`（实测基准 `0.2.2-rc.5`）；DSH 升级到
   0.3 时需更新该范围并回归。`check-packages.mjs` 会校验该范围不被无意改动。
 - 破坏性变更遵循 semver；预发布版本使用 `-rc.N` / `-alpha.N` 后缀。
 - 每次发版前同步 README 与 `docs/releases/v<version>.md`，并确认根 `package.json`
   的 `version` 已 bump、lockfile 已同步。
+
+> **当前 registry 实况（2026-11-19）**：尚无稳定版，`latest` 与 `next` 都指向
+> `0.1.0-rc.1`；更早还有一个 `0.0.0-stage` 探针版本。稳定版发布后，维护者应执行
+> `npm dist-tag add @yankeguo/dsh-xcode-mcp@<stable> latest` 把默认安装移回稳定版。
+> 本次审计未修改任何 dist-tag。
 
 ## 脚本参考
 
@@ -472,7 +486,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
 只读、无第三方依赖，CI 在 build 之后运行。覆盖：manifest 身份与发布形态
 （name/semver/非 private/`publishConfig.access`/repository/homepage/bugs）、
 engines（`dsh` 精确范围、`node` 存在）、files/exports 接线、DSH bundle 契约
-（`dsh.bundle.patch` → 存在的 `cordis.patch.yml`、icon ≤ 256 KiB、
+（`dsh.bundle.patch` → 存在的 `cordis.patch.yml`、`dsh.bundle.platforms` 仅 darwin、icon ≤ 256 KiB、
 `locale/en.json` + `locale/zh.json` 的 `meta.title`/`meta.description` 非空且无
 营销最高级）、DSH 依赖放置（host 包必须是 peer、DSH peer 是范围而非精确 rc pin、
 每个 peer 都装为 devDependency）、构建产物、lockfile 一致性（仅根 importer、
@@ -507,7 +521,8 @@ PASS/FAIL 清单，任一失败以非零码退出。
    npm stage reject <stage-id>                     # 不可恢复，谨慎
    ```
    然后 Actions → `publish` → Run workflow → `release_tag` 填**同一个既有 tag**。
-   CI 会重新 stage，provenance 也重新生成。
+   CI 会重新 stage，provenance 也重新生成。前提是该版本**尚未发布**；已经发布的
+   版本（例如 `0.1.0-rc.1`）不能通过 dispatch 重新 stage，只能升版本或补 Release。
 4. 如果上一次运行其实**已经 stage 成功**，不要重跑 stage：直接用
    `node scripts/promote-release.mjs` 完成发布。
 
@@ -524,8 +539,9 @@ PASS/FAIL 清单，任一失败以非零码退出。
   重跑 promote（会走 `gh release edit/create --verify-tag`），不会重复发布。
 - 预检报 “prerelease ... was staged with the latest dist-tag”：先按提示
   `npm stage reject <stage-id>`，再 `node scripts/stage-release.mjs --version
-  <version> --dist-tag next` 重新 stage（或通过 workflow_dispatch 指定同一个既有
-  release_tag 重跑 CI；CI 按版本自动用 next 重新 stage）；
+  <version> --dist-tag next` 重新 stage（或对**尚未发布**的版本通过
+  workflow_dispatch 指定同一个既有 release_tag 重跑 CI；CI 按版本自动用 next
+  重新 stage）；
   **不要**在这种记录上 approve。
 - approve 之后报 “the latest dist-tag points at prerelease ...”：包**已经公开**；
   立即 `npm dist-tag add @yankeguo/dsh-xcode-mcp@<stable-version> latest` 把 latest
@@ -540,11 +556,16 @@ PASS/FAIL 清单，任一失败以非零码退出。
 | staged 了**错误 commit** 的版本 | reject 该版本的全部 staged id，确认 tag/commit 后再 dispatch 同一 tag（不会移动 tag） |
 | CI 重跑报“版本已 staged / 已发布”或出现重复 staged 记录 | 先 `npm stage list @yankeguo/dsh-xcode-mcp --json` 核对：已 stage → 直接 promote；有残留 → reject 后从同一既有 tag 全量重跑 |
 | 版本已经发布 | 不能再次 stage/publish 同版本；升版本重新发版（72 小时内可 `npm unpublish`，见下） |
-| 想用 workflow_dispatch 重跑 | `release_tag` 必须是已存在的 tag；工作流校验 tag commit == HEAD。**不要删除/重建/移动 tag** |
+| 想用 workflow_dispatch 重跑 | `release_tag` 必须是已存在且**尚未发布**的 tag；工作流校验 tag commit == HEAD。已发布版本不能重新 stage。**不要删除/重建/移动 tag** |
 | tag 不存在 | `git push origin <tag>` 推送既有 tag；本工作流与 promote 脚本都不会创建 tag |
 | 误发版本 | npm 允许 72 小时内 `npm unpublish @yankeguo/dsh-xcode-mcp@<version>`；超过则只能 `npm deprecate` 并升版本 |
 
 ### 首次 CI 运行的验证清单
+
+> 本仓库的 `0.1.0-rc.1` 已在 2026-11-19 手工发布，且首发 tag run 在 “Resolve and
+> verify the release tag” 处失败（见“新包首次发布”的实况）。下面清单里的 stage id、
+> `npm view` 404、恰好一条 staged 记录等检查**不适用于已发布版本**，保留为未来
+> 新包/新版本的检查项。
 
 - [ ] `scripts/trusted-publishers.sh --list` 显示本包已配置 `publish.yml` /
       `yankeguo/dsh-xcode-mcp`，且授权动作为 staged publishing（没有旧的
@@ -598,9 +619,9 @@ PASS/FAIL 清单，任一失败以非零码退出。
 | approve 报 `EOTP` / OTP 错误 | OTP 输错或过期；重跑 `node scripts/promote-release.mjs` 重新输入。也可手工 `npm stage approve <id>` 后重跑 promote（会跳过已批准项） |
 | promote 报 “no staged version and no published version” | CI 未运行或 stage 失败；先跑发布工作流（tag push 或 dispatch 既有 tag），看到 stage id 后再 promote |
 | promote 报 “has N staged records” | 同一版本存在多条 staged 记录：`npm stage view <id> --json` 比较，`npm stage reject` 清掉旧记录后重试 |
-| promote 报 “prerelease ... was staged with the latest dist-tag” / `--tag latest` 搭配 rc 直接失败 | 该 rc 的 staged 记录以 latest 暂存。按提示 `npm stage reject <stage-id>`，再 `node scripts/stage-release.mjs --version <version> --dist-tag next` 重新 stage；或通过 workflow_dispatch 指定同一个既有 release_tag 重跑 CI（CI 按版本自动用 next）。不要在 latest 记录上 approve |
+| promote 报 “prerelease ... was staged with the latest dist-tag” / `--tag latest` 搭配 rc 直接失败 | 该 rc 的 staged 记录以 latest 暂存。按提示 `npm stage reject <stage-id>`，再 `node scripts/stage-release.mjs --version <version> --dist-tag next` 重新 stage；或对**尚未发布**的版本通过 workflow_dispatch 指定同一个既有 release_tag 重跑 CI（CI 按版本自动用 next）。不要在 latest 记录上 approve |
 | approve 后发现 `dist-tags.latest` 指向 rc | 包已公开；立即 `npm dist-tag add @yankeguo/dsh-xcode-mcp@<stable-version> latest` 把 latest 指回稳定版，再重跑 `node scripts/promote-release.mjs --version <version>` 完成 GitHub Release |
-| `Cannot publish over the previously published versions` | 该版本已发布，不能覆盖；升版本后再发。**首个版本**手工发布后，推送其 tag 触发的 CI 也会在 stage 步骤报此错误：这是首发的一次性预期现象（仅首个版本如此，见“新包首次发布”），不要移动 tag |
+| `Cannot publish over the previously published versions` | 该版本已发布，不能覆盖；升版本后再发。**首个版本**手工发布后不能再 stage；本仓库的 `v0.1.0-rc.1` tag run 实际在更早的 tag 校验步骤就失败（见“新包首次发布”实况）。不要移动 tag |
 | promote 报 `release tag ... does not exist` | 先把既有 tag push 到 origin；promote 与 CI 都不会创建/移动 tag |
 | promote 报 notes 文件不存在/为空 | 先写 `docs/releases/v<version>.md`，或用 `--notes-file` 指定 |
 | GitHub Release 创建失败 | 包已公开；修好 `gh auth`/网络后重跑 promote，或手工 `gh release create <tag> --verify-tag --title <tag> --notes-file <file>` |
@@ -617,8 +638,8 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp
 # 或在 Web：Plugins → Add plugin → 输入 @yankeguo/dsh-xcode-mcp
 ```
 
-> 只有预发布版本（如首发 `0.1.0-rc.1`，dist-tag `next`）时**没有 `latest`
-> 可用**，必须显式指定版本：
+> 当前 registry 还没有稳定版，`latest` 与 `next` 都指向 `0.1.0-rc.1`，所以不指定
+> 版本也会解析到 rc；仍建议显式指定版本，以免稳定版发布后行为变化：
 > `dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.1`。
 
 运行前提：**macOS + Xcode 26 或更新**（`xcrun mcpbridge` 可用，`xcode-select`
