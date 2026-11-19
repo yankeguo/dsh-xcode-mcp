@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { Fiber } from '@deepseek-ai/cordis'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
@@ -8,7 +8,7 @@ import { createScope } from '@deepseek-ai/dsh-scope'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Config, defaultSkillsCacheDir, listExportedSkills, loadExportedSkill, startAutoloader } from '../src/index.ts'
+import { Config, defaultSkillsCacheDir, exportXcodeSkills, listExportedSkills, loadExportedSkill, startAutoloader } from '../src/index.ts'
 import type { XcodeProjectLocation } from '../src/index.ts'
 
 const PROJECT_ROOT = '/tmp/Example'
@@ -26,6 +26,13 @@ async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-xcode-mcp-skills-'))
   temporaryDirectories.push(directory)
   return directory
+}
+
+async function rigScopedAgent(root: Context, id: string): Promise<ScopedAgent> {
+  const key = { id }
+  const scope = createScope(root, key)
+  cleanups.push(() => scope.dispose())
+  return { agent: { id, ctx: scope.ctx } as unknown as Agent, key, dispose: () => scope.dispose() }
 }
 
 async function writeSkill(cacheDir: string, name: string, frontmatter: string, body = 'Instruction body.\n'): Promise<void> {
@@ -236,6 +243,19 @@ describe('embedded Xcode skills', () => {
     })
   })
 
+  it('warns when a bundle file cannot be read', async () => {
+    const directory = await temporaryDirectory()
+    await writeSkill(directory, 'swiftui-specialist', VALID_FRONTMATTER)
+    // A directory where SKILL.md should be fails the read with EISDIR/EACCES.
+    await mkdir(join(directory, 'unreadable', 'SKILL.md'), { recursive: true })
+    const warn = vi.fn()
+
+    const skills = await listExportedSkills(directory, { warn })
+
+    expect(skills.map(skill => skill.name)).toEqual(['swiftui-specialist'])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipping unreadable or malformed'), expect.any(Error))
+  })
+
   it('honors the invocation policy frontmatter', async () => {
     const r = await rig()
     await r.autoloader({
@@ -251,6 +271,47 @@ describe('embedded Xcode skills', () => {
       expect(skills).toHaveLength(1)
       expect(skills[0]?.invocation).toEqual({ modelInvocable: false, userInvocable: true })
     })
+  })
+
+  it('keeps the MCP mount working when the skills provider fails asynchronously', async () => {
+    const root = new Context()
+    cleanups.push(() => root.fiber.dispose())
+    root.provide('skills', {
+      registerProvider() {
+        throw new Error('duplicate provider')
+      },
+    } as never)
+    root.provide('workingDirectory', { ensure: async () => PROJECT_ROOT } as never)
+    root.provide('agents', { list: () => [] } as never)
+    const cacheDir = await temporaryDirectory()
+    const mounted: unknown[] = []
+    const stub = {
+      name: 'stub-mcp-client',
+      apply(stubCtx: Context, _config: unknown) {
+        stubCtx.effect(() => () => {})
+      },
+    }
+    const fiber = root.plugin({
+      name: 'test-xcode-mcp-autoload',
+      inject: ['workingDirectory', 'agents'],
+      apply: (ctx: Context) => startAutoloader(ctx, Config({}), {
+        discoverProjectRoot: async () => LOCATION,
+        probeBridge: async () => true,
+        skillsCacheDir: cacheDir,
+        exportSkills: async () => {},
+        mount(agent, config) {
+          mounted.push(config)
+          return agent.ctx.plugin(stub, config)
+        },
+      }),
+    })
+    await fiber
+    const { agent } = await rigScopedAgent(root, 'agent-provider-failed')
+
+    await expect(root.serial('agent/created', { agent, source: 'startup' })).resolves.toBeUndefined()
+    // Let the child plugin's asynchronous apply failure settle.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(mounted).toHaveLength(1)
   })
 
   it('unregisters the provider when the Agent is disposed', async () => {
@@ -295,17 +356,53 @@ describe('embedded Xcode skills', () => {
 })
 
 describe('skills cache helpers', () => {
-  it('honors DSH_HOME for the default cache directory', () => {
-    const previous = process.env['DSH_HOME']
-    try {
-      process.env['DSH_HOME'] = '/tmp/dsh-home'
-      expect(defaultSkillsCacheDir()).toBe('/tmp/dsh-home/cache/dsh-xcode-mcp/skills')
-      delete process.env['DSH_HOME']
-      expect(defaultSkillsCacheDir()).toContain('.dsh')
-    } finally {
-      if (previous === undefined) delete process.env['DSH_HOME']
-      else process.env['DSH_HOME'] = previous
-    }
+  it('resolves the default cache directory like DSH home resolution', () => {
+    const suffix = join('cache', 'dsh-xcode-mcp', 'skills')
+    expect(defaultSkillsCacheDir({ DSH_HOME: '/tmp/dsh-home' })).toBe(join('/tmp/dsh-home', suffix))
+    expect(defaultSkillsCacheDir({ DSH_HOME: '' })).toBe(join(homedir(), '.dsh', suffix))
+    expect(defaultSkillsCacheDir({ DSH_HOME: '   ' })).toBe(join(homedir(), '.dsh', suffix))
+    expect(defaultSkillsCacheDir({ DSH_HOME: '~' })).toBe(join(homedir(), suffix))
+    expect(defaultSkillsCacheDir({ DSH_HOME: '~/custom' })).toBe(join(homedir(), 'custom', suffix))
+    expect(defaultSkillsCacheDir({ DSH_HOME: 'relative-home' })).toBe(join(resolve('relative-home'), suffix))
+  })
+
+  it('reads Xcode’s snake_case when_to_use and the DSH camelCase spelling', async () => {
+    const directory = await temporaryDirectory()
+    await writeSkill(directory, 'camel', 'name: camel\ndescription: "camel"\nwhenToUse: camel hint')
+    await writeSkill(directory, 'snake', 'name: snake\ndescription: "snake"\nwhen_to_use: |\n  snake hint\n  second line')
+
+    const candidates = await listExportedSkills(directory)
+
+    expect(candidates.map(candidate => [candidate.name, candidate.whenToUse])).toEqual([
+      ['camel', 'camel hint'],
+      ['snake', 'snake hint\nsecond line\n'],
+    ])
+  })
+
+  it('passes the configured command and env to the skills export', async () => {
+    const directory = await temporaryDirectory()
+    const fake = join(directory, 'fake-xcrun')
+    await writeFile(fake, '#!/bin/sh\n[ "$DSH_XCODE_EXPORT_MARK" = yes ]\n', { mode: 0o755 })
+    const cacheDir = join(directory, 'cache')
+
+    await expect(exportXcodeSkills(cacheDir, undefined, {
+      command: fake,
+      env: { DSH_XCODE_EXPORT_MARK: 'yes' },
+    })).resolves.toBeUndefined()
+    await expect(exportXcodeSkills(cacheDir, undefined, {
+      command: fake,
+      env: { DSH_XCODE_EXPORT_MARK: 'no' },
+    })).rejects.toThrow(/agent skills export failed/)
+  })
+
+  it('warns when the cache path is not a directory', async () => {
+    const directory = await temporaryDirectory()
+    const cacheFile = join(directory, 'cache-file')
+    await writeFile(cacheFile, 'not a directory')
+    const warn = vi.fn()
+
+    await expect(listExportedSkills(cacheFile, { warn })).resolves.toEqual([])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot list Xcode skills'), expect.any(Error))
   })
 
   it('treats a missing cache directory as a valid empty state', async () => {

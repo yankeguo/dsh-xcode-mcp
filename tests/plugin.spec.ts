@@ -151,6 +151,40 @@ describe('startAutoloader', () => {
     expect(h.mounted).toHaveLength(1)
   })
 
+  it('waits for an in-flight backfill mount before agent/created settles', async () => {
+    const agents: Agent[] = []
+    const h = harness({ agents })
+    const { agent } = await agentRig(h.root, 'agent-backfill-race')
+    agents.push(agent)
+    let releaseDiscovery: (() => void) | undefined
+    const discoveryGate = new Promise<void>((resolve) => { releaseDiscovery = resolve })
+
+    const fiber = autoloader(h, {
+      discover: async () => {
+        await discoveryGate
+        return LOCATION
+      },
+    })
+    try {
+      // Let the plugin fiber run its apply far enough to register the
+      // `agent/created` listener while the backfill discovery stays gated.
+      await new Promise(resolve => setTimeout(resolve, 0))
+      const creation = h.root.serial('agent/created', { agent, source: 'startup' })
+      let settled = false
+      void creation.then(() => { settled = true })
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(settled).toBe(false)
+
+      releaseDiscovery?.()
+      await creation
+
+      expect(h.mounted).toHaveLength(1)
+    } finally {
+      releaseDiscovery?.()
+      await fiber.dispose()
+    }
+  })
+
   it('does not mount when no Xcode project is found', async () => {
     const h = harness()
     await autoloader(h, { discover: async () => undefined })
@@ -273,6 +307,60 @@ describe('startAutoloader', () => {
     await creation
 
     expect(Date.now() - startedAt).toBeLessThan(5_000)
+  })
+
+  it('interrupts an in-flight backfill startup when the plugin is disposed', async () => {
+    const agents: Agent[] = []
+    const h = harness({ agents })
+    const { agent } = await agentRig(h.root, 'agent-backfill-inflight')
+    agents.push(agent)
+    let disconnects = 0
+    const hung = {
+      then() {},
+      dispose: async () => {
+        disconnects += 1
+      },
+    } as unknown as Fiber & PromiseLike<Fiber>
+
+    const fiber = autoloader(h, {
+      config: Config({ startupTimeoutMs: 10_000, skills: false }),
+      mount: () => hung,
+    })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const startedAt = Date.now()
+
+    await fiber.dispose()
+
+    expect(Date.now() - startedAt).toBeLessThan(5_000)
+    expect(disconnects).toBe(1)
+  })
+
+  it('stops waiting for a backfill mount when creation is cancelled', async () => {
+    const agents: Agent[] = []
+    const h = harness({ agents })
+    const { agent } = await agentRig(h.root, 'agent-backfill-cancelled')
+    agents.push(agent)
+    const hung = {
+      then() {},
+      dispose: async () => {},
+    } as unknown as Fiber & PromiseLike<Fiber>
+
+    const fiber = autoloader(h, {
+      config: Config({ startupTimeoutMs: 10_000, skills: false }),
+      mount: () => hung,
+    })
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      const controller = new AbortController()
+      const creation = h.root.serial('agent/created', { agent, source: 'startup', signal: controller.signal })
+      const startedAt = Date.now()
+      setTimeout(() => controller.abort(), 20)
+
+      await expect(creation).resolves.toBeUndefined()
+      expect(Date.now() - startedAt).toBeLessThan(5_000)
+    } finally {
+      await fiber.dispose()
+    }
   })
 
   it('disconnects the MCP client when the Agent is disposed', async () => {

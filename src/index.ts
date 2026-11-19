@@ -87,16 +87,17 @@ export interface Config {
   /** Extra environment variables merged over the scrubbed ambient environment. */
   env: Record<string, string>
   /**
-   * Watchdog for the initial MCP connection and tool sync, in milliseconds
-   * (1 to 2147483647, Node's maximum timer delay). The plugin's own timeout
-   * keeps compatibility with `mcp-client` releases that predate
+   * Watchdog for the initial MCP connection and tool sync, in integer
+   * milliseconds (1 to 2147483647, Node's maximum timer delay). The plugin's
+   * own timeout keeps compatibility with `mcp-client` releases that predate
    * `startupTimeoutMs`.
    */
   startupTimeoutMs: number
   /**
    * Export Xcode's official skills once per activation and register them for
    * Xcode-workspace Agents. Requires the `skills` service for registration;
-   * without it the MCP mount still works and the export is skipped.
+   * without it the export still runs (and refreshes the cache), while the
+   * provider stays pending and the MCP mount works unchanged.
    */
   skills: boolean
 }
@@ -107,7 +108,10 @@ export const Config: z<Partial<Config>, Config> = z.object({
   command: z.string().pattern(/\S/).default(DEFAULT_COMMAND),
   args: z.array(String).default([...DEFAULT_ARGS]),
   env: z.dict(String).default({ ...DEFAULT_ENV }),
-  startupTimeoutMs: z.number().min(1).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STARTUP_TIMEOUT_MS),
+  // `.step(1)` also rejects `NaN`, which range checks alone let through: a
+  // `startupTimeoutMs: .nan` profile row would otherwise turn the watchdog
+  // into an immediate timeout for every mount.
+  startupTimeoutMs: z.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STARTUP_TIMEOUT_MS),
   skills: z.boolean().default(true),
 })
 
@@ -124,11 +128,11 @@ export interface AutoloaderOptions {
   /** Replace the filesystem walk (defaults to {@link findXcodeProjectRoot}). */
   discoverProjectRoot?: (cwd: string) => Promise<XcodeProjectLocation | undefined>
   /** Replace the `mcpbridge` availability probe (defaults to {@link probeMcpBridge}). */
-  probeBridge?: (command: string, args: string[]) => Promise<boolean>
+  probeBridge?: (command: string, args: string[], env?: Record<string, string>) => Promise<boolean>
   /** Replace the per-Agent mount (defaults to `agent.ctx.plugin(McpClient, …)`). */
   mount?: (agent: Agent, config: McpClient.Config) => Fiber & PromiseLike<Fiber>
   /** Replace the skills export (defaults to {@link exportXcodeSkills}). */
-  exportSkills?: (cacheDir: string, signal: AbortSignal) => Promise<void>
+  exportSkills?: (cacheDir: string, signal: AbortSignal, options?: XcodeLauncherOptions) => Promise<void>
   /** Override the skills cache directory (defaults to {@link defaultSkillsCacheDir}). */
   skillsCacheDir?: string
 }
@@ -189,8 +193,13 @@ export async function startAutoloader(
   const mount = options.mount ?? ((agent: Agent, mountConfig: McpClient.Config) => agent.ctx.plugin(McpClient, mountConfig))
   const exportSkills = options.exportSkills ?? exportXcodeSkills
   const skillsCacheDir = options.skillsCacheDir ?? defaultSkillsCacheDir()
+  // The skills export must use the same Xcode the MCP mount will use. A custom
+  // `xcrun` path is reused when it is still xcrun; otherwise the system xcrun
+  // is the only meaningful exporter, with the configured env (e.g.
+  // DEVELOPER_DIR) applied to both.
+  const skillsCommand = basename(config.command) === 'xcrun' ? config.command : DEFAULT_COMMAND
   const lifecycle = new AbortController()
-  const seen = new WeakSet<Agent>()
+  const tasks = new WeakMap<Agent, Promise<void>>()
   const fibers = new Set<Fiber>()
   const pending = new Set<Promise<void>>()
   // Registration-scoped invalidators of every live per-Agent skill provider;
@@ -199,8 +208,16 @@ export async function startAutoloader(
 
   const attach = (agent: Agent, signal?: AbortSignal): Promise<void> => {
     // One Agent has one lifecycle: a backfill and the creation event may race.
-    if (seen.has(agent)) return Promise.resolve()
-    seen.add(agent)
+    // Reuse the in-flight task instead of resolving immediately, so a serial
+    // `agent/created` listener still waits for the mount before creation
+    // settles.
+    const existing = tasks.get(agent)
+    if (existing !== undefined) {
+      // The shared backfill task predates this creation signal; stop waiting
+      // promptly if the caller cancels creation instead of blocking the
+      // serial listener until the backfill watchdog fires.
+      return signal === undefined ? existing : settleOnAbort(existing, signal)
+    }
     const task = (async (): Promise<void> => {
       if (lifecycle.signal.aborted) return
       const scope = signal === undefined ? lifecycle.signal : AbortSignal.any([signal, lifecycle.signal])
@@ -224,11 +241,12 @@ export async function startAutoloader(
       // instead of letting the MCP client log connection failures and retries.
       let available: boolean
       try {
-        available = await probe(config.command, config.args)
+        available = await probe(config.command, config.args, config.env)
       } catch (error) {
         if (!scope.aborted) ctx.logger.warn(`xcode-mcp-autoload: cannot probe ${config.command} for agent ${agent.id}`, error)
         return
       }
+      if (scope.aborted) return
       if (!available) {
         ctx.logger.warn(`xcode-mcp-autoload: ${config.command} cannot find mcpbridge (requires Xcode 26+ with xcode-select pointing at it); skipping the Xcode MCP mount for agent ${agent.id}`)
         return
@@ -247,6 +265,15 @@ export async function startAutoloader(
           }, 'xcode-mcp-autoload.skills')
           skillsFiber = agent.ctx.plugin(xcodeSkillsProvider, { cacheDir: skillsCacheDir, invalidators })
           fibers.add(skillsFiber)
+          // The child plugin's apply is asynchronous: a provider-registration
+          // failure (for example a duplicate provider name in this Agent's
+          // scope) must still produce a plugin diagnostic instead of only a
+          // Cordis error. MCP mounting continues independently.
+          void Promise.resolve(skillsFiber).catch((error: unknown) => {
+            if (!scope.aborted) {
+              ctx.logger.warn(`xcode-mcp-autoload: cannot register Xcode skills for agent ${agent.id}`, error)
+            }
+          })
         } catch (error) {
           releaseSkills?.()
           if (skillsFiber !== undefined) {
@@ -269,8 +296,13 @@ export async function startAutoloader(
         }, 'xcode-mcp-autoload.attach')
         mounted = mount(agent, createMountConfig(config, location.root))
         fibers.add(mounted)
-        await withTimeout(mounted, config.startupTimeoutMs, `xcode-mcp-autoload: MCP startup timed out for agent ${agent.id}`)
-        ctx.logger.info(`xcode-mcp-autoload: mounted ${config.serverName} MCP server for agent ${agent.id} at ${location.root}`)
+        await withTimeout(
+          mounted,
+          config.startupTimeoutMs,
+          `xcode-mcp-autoload: MCP startup timed out for agent ${agent.id}`,
+          scope,
+        )
+        ctx.logger.info(`xcode-mcp-autoload: registered ${config.serverName} MCP client for agent ${agent.id} at ${location.root}`)
       } catch (error) {
         release?.()
         if (mounted !== undefined) {
@@ -287,6 +319,7 @@ export async function startAutoloader(
         if (!scope.aborted) ctx.logger.warn(`xcode-mcp-autoload: cannot mount the Xcode MCP server for agent ${agent.id} at ${location.root}`, error)
       }
     })()
+    tasks.set(agent, task)
     pending.add(task)
     void task.then(
       () => pending.delete(task),
@@ -302,12 +335,13 @@ export async function startAutoloader(
     const exportTask = (async (): Promise<void> => {
       try {
         if (lifecycle.signal.aborted) return
-        if (!await probe('xcrun', ['mcpbridge'])) {
+        if (!await probe(skillsCommand, ['mcpbridge'], config.env)) {
+          if (lifecycle.signal.aborted) return
           ctx.logger.info('xcode-mcp-autoload: mcpbridge is unavailable; skipping the Xcode skills export')
           return
         }
         if (lifecycle.signal.aborted) return
-        await exportSkills(skillsCacheDir, lifecycle.signal)
+        await exportSkills(skillsCacheDir, lifecycle.signal, { command: skillsCommand, env: config.env })
         for (const invalidate of [...invalidators]) invalidate()
         ctx.logger.info(`xcode-mcp-autoload: exported Xcode skills to ${skillsCacheDir}`)
       } catch (error) {
@@ -323,19 +357,34 @@ export async function startAutoloader(
     )
   }
 
+  // Cordis defers effect teardown until apply settles, so the lifecycle effect
+  // below cannot interrupt a startup that is still in flight during the
+  // initial backfill. This observer runs as soon as unload begins, aborts the
+  // shared lifecycle, and lets the attach watchdog's abort race settle the
+  // mount (and dispose it) without waiting for the full startup timeout.
+  ctx.on('internal/plugin', (fiber) => {
+    if (fiber !== ctx.fiber || fiber.uid !== null) return
+    lifecycle.abort()
+  }, { global: true })
+
   ctx.effect(() => async () => {
     lifecycle.abort()
     // Dispose synchronously known fibers first so an in-flight startup is
     // interrupted instead of delaying plugin unload until the watchdog fires.
-    // Cordis defers effect teardown until apply settles, so a startup still in
-    // flight during the initial backfill is bounded by the watchdog instead.
     await Promise.allSettled([...fibers].map(fiber => fiber.dispose()))
     await Promise.allSettled([...pending])
     await Promise.allSettled([...fibers].map(fiber => fiber.dispose()))
   }, 'xcode-mcp-autoload.lifecycle')
 
   ctx.on('agent/created', async ({ agent, signal }) => {
-    await attach(agent, signal)
+    // `attach` contains its own failures, but this listener backs a serial
+    // creation dispatch: keep the final boundary defensive so an unexpected
+    // internal error can never fail Agent registration.
+    try {
+      await attach(agent, signal)
+    } catch (error) {
+      ctx.logger.warn(`xcode-mcp-autoload: unexpected attach failure for agent ${agent.id}`, error)
+    }
     return undefined
   })
   // Inspect existing Agents concurrently: one slow startup must not delay the
@@ -374,52 +423,91 @@ const xcodeSkillsProvider = {
   inject: ['skills'],
   apply(ctx: Context, config: SkillsProviderConfig): void {
     let invalidate: (() => void) | undefined
-    ctx.skills.registerProvider((control) => {
-      invalidate = control.invalidate
-      config.invalidators.add(control.invalidate)
-      return {
-        name: SKILL_PROVIDER_NAME,
-        list: options => listExportedSkills(config.cacheDir, {
-          signal: options.signal,
-          warn: (message, error) => ctx.logger.warn(message, error),
-        }),
-        get: (candidate, options) => loadExportedSkill(candidate, options.signal),
-      }
-    })
-    ctx.effect(() => () => {
+    try {
+      ctx.skills.registerProvider((control) => {
+        invalidate = control.invalidate
+        config.invalidators.add(control.invalidate)
+        return {
+          name: SKILL_PROVIDER_NAME,
+          list: options => listExportedSkills(config.cacheDir, {
+            signal: options.signal,
+            warn: (message, error) => ctx.logger.warn(message, error),
+          }),
+          get: (candidate, options) => loadExportedSkill(candidate, options.signal),
+        }
+      })
+      ctx.effect(() => () => {
+        if (invalidate !== undefined) config.invalidators.delete(invalidate)
+      }, 'xcode-mcp-autoload.skills.invalidate')
+    } catch (error) {
+      // registerProvider calls the factory before it inserts into the layer;
+      // a duplicate name throws after the invalidator was registered, and the
+      // cleanup effect may never have been installed. Do not leak a stale no-op.
       if (invalidate !== undefined) config.invalidators.delete(invalidate)
-    }, 'xcode-mcp-autoload.skills.invalidate')
+      throw error
+    }
   },
 }
 
 /**
  * Stable cache directory for the exported Xcode skills.
- * @returns `<dshHome>/cache/dsh-xcode-mcp/skills`, honoring `$DSH_HOME`.
+ *
+ * Mirrors DSH's own `resolveDshHome`: an empty or whitespace-only `$DSH_HOME`
+ * is unset, `~`/`~/…` expands against the OS home, and a relative value is
+ * resolved against the Host's launch directory.
+ * @param env - environment mapping used to read `DSH_HOME` (defaults to `process.env`).
+ * @returns `<dshHome>/cache/dsh-xcode-mcp/skills`.
  */
-export function defaultSkillsCacheDir(): string {
-  const dshHome = process.env['DSH_HOME'] ?? join(homedir(), '.dsh')
-  return join(dshHome, 'cache', 'dsh-xcode-mcp', 'skills')
+export function defaultSkillsCacheDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env['DSH_HOME']
+  const dshHome = configured !== undefined && configured.trim().length > 0
+    ? expandHomePath(configured)
+    : join(homedir(), '.dsh')
+  return join(resolve(dshHome), 'cache', 'dsh-xcode-mcp', 'skills')
+}
+
+/** Expand the `~` forms DSH's own home resolver accepts. */
+function expandHomePath(path: string): string {
+  if (path === '~') return homedir()
+  if (path.startsWith('~/') || path.startsWith('~\\')) return join(homedir(), path.slice(2))
+  return path
+}
+
+/** Optional launcher context shared by the bridge probe and the skills export. */
+export interface XcodeLauncherOptions {
+  /** Executable used for the `xcrun` command (defaults to `xcrun`). */
+  command?: string
+  /** Extra environment variables merged over the Host environment. */
+  env?: Record<string, string>
 }
 
 /**
  * Export Xcode's official skills into the cache directory.
  *
- * Runs `xcrun agent skills export --output-dir <cacheDir> --replace-existing`
+ * Runs `<xcrun> agent skills export --output-dir <cacheDir> --replace-existing`
  * so the cache always matches the locally installed Xcode. The content is
  * generated on the user's machine from their own Xcode; the package ships no
  * Apple content. Bounded by {@link EXPORT_TIMEOUT_MS} and the caller's signal.
  * @param cacheDir - directory receiving the skill subdirectories.
  * @param signal - cancellation; aborts and kills the export child process.
+ * @param options - xcrun executable and extra environment shared with the MCP mount.
  */
-export async function exportXcodeSkills(cacheDir: string, signal?: AbortSignal): Promise<void> {
+export async function exportXcodeSkills(
+  cacheDir: string,
+  signal?: AbortSignal,
+  options: XcodeLauncherOptions = {},
+): Promise<void> {
   await mkdir(cacheDir, { recursive: true })
+  const command = options.command ?? DEFAULT_COMMAND
+  const env = options.env === undefined ? undefined : { ...process.env, ...options.env }
   await new Promise<void>((resolvePromise, reject) => {
-    execFile('xcrun', ['agent', 'skills', 'export', '--output-dir', cacheDir, '--replace-existing'], {
+    execFile(command, ['agent', 'skills', 'export', '--output-dir', cacheDir, '--replace-existing'], {
       timeout: EXPORT_TIMEOUT_MS,
+      ...(env === undefined ? {} : { env }),
       ...(signal === undefined ? {} : { signal }),
     }, (error, _stdout, stderr) => {
       if (error !== null) {
-        reject(new Error(`xcrun agent skills export failed: ${stderr.trim() || error.message}`, { cause: error }))
+        reject(new Error(`${command} agent skills export failed: ${stderr.trim() || error.message}`, { cause: error }))
       } else {
         resolvePromise()
       }
@@ -455,7 +543,15 @@ export async function listExportedSkills(cacheDir: string, options: {
   let entries
   try {
     entries = await readdir(cacheDir, { withFileTypes: true })
-  } catch {
+  } catch (error) {
+    options.signal?.throwIfAborted()
+    const code = (error as NodeJS.ErrnoException).code
+    // A missing cache is the normal "export not landed yet" state; any other
+    // readdir failure (permissions, a file in place of the directory) is a
+    // real configuration problem worth surfacing.
+    if (code !== 'ENOENT') {
+      options.warn?.(`xcode-mcp-autoload: cannot list Xcode skills in ${cacheDir}`, error)
+    }
     return []
   }
   const candidates: SkillCandidate[] = []
@@ -481,7 +577,7 @@ export async function listExportedSkills(cacheDir: string, options: {
       })
     } catch (error) {
       options.signal?.throwIfAborted()
-      options.warn?.(`xcode-mcp-autoload: skipping malformed Xcode skill at ${path}`, error)
+      options.warn?.(`xcode-mcp-autoload: skipping unreadable or malformed Xcode skill at ${path}`, error)
     }
   }
   return candidates
@@ -517,8 +613,12 @@ async function readSkillBundle(path: string, signal?: AbortSignal): Promise<Pars
   let text: string
   try {
     text = await readFile(path, 'utf8')
-  } catch {
-    return undefined
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    // The bundle may disappear between readdir and read; a permission or
+    // type error is a real problem and must reach the caller's diagnostic.
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined
+    throw error
   }
   signal?.throwIfAborted()
   const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text)
@@ -530,8 +630,11 @@ async function readSkillBundle(path: string, signal?: AbortSignal): Promise<Pars
   if (typeof name !== 'string' || !SKILL_NAME_PATTERN.test(name)) throw new Error('frontmatter name must be kebab-case')
   const description = record['description']
   if (typeof description !== 'string' || description.trim() === '') throw new Error('frontmatter description is required')
-  const whenToUse = record['whenToUse']
-  if (whenToUse !== undefined && typeof whenToUse !== 'string') throw new Error('frontmatter whenToUse must be a string')
+  // DSH's own SKILL.md convention spells this `whenToUse`, while Xcode's
+  // `xcrun agent skills export` emits `when_to_use` (Xcode 27 verified); accept
+  // both so Apple's routing guidance reaches the skill catalog.
+  const whenToUse = record['whenToUse'] ?? record['when_to_use']
+  if (whenToUse !== undefined && typeof whenToUse !== 'string') throw new Error('frontmatter whenToUse/when_to_use must be a string')
   const metadata = record['metadata']
   if (metadata !== undefined && (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata))) {
     throw new Error('frontmatter metadata must be a mapping')
@@ -563,12 +666,21 @@ async function readSkillBundle(path: string, signal?: AbortSignal): Promise<Pars
  * failure noise; it never fails Agent creation.
  * @param command - configured executable.
  * @param args - configured arguments.
+ * @param env - extra environment merged over the Host environment, so an
+ *   explicit `DEVELOPER_DIR` selects the same Xcode the MCP client will use.
  * @returns `true` when the bridge is available or no probe applies.
  */
-export async function probeMcpBridge(command: string, args: string[]): Promise<boolean> {
+export async function probeMcpBridge(
+  command: string,
+  args: string[],
+  env?: Record<string, string>,
+): Promise<boolean> {
   if (basename(command) !== 'xcrun' || args[0] !== 'mcpbridge') return true
   return new Promise<boolean>((resolvePromise) => {
-    execFile(command, ['--find', 'mcpbridge'], { timeout: PROBE_TIMEOUT_MS }, (error) => {
+    execFile(command, ['--find', 'mcpbridge'], {
+      timeout: PROBE_TIMEOUT_MS,
+      ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
+    }, (error) => {
       resolvePromise(error === null)
     })
   })
@@ -615,20 +727,86 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Await one promise-like value with a watchdog. */
-function withTimeout<T>(value: PromiseLike<T>, timeoutMs: number, message: string): Promise<T> {
+/**
+ * Await a task unless a cancellation signal fires first.
+ *
+ * Used for the shared backfill task: the task itself keeps its own lifecycle,
+ * but a creation listener must not stay blocked on it after creation aborts.
+ * @param task - in-flight attach task.
+ * @param signal - creation cancellation signal.
+ * @returns fulfillment when the task settles or the signal aborts.
+ */
+function settleOnAbort(task: Promise<void>, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise<void>((resolvePromise) => {
+    const cleanup = (): void => signal.removeEventListener('abort', onAbort)
+    const onAbort = (): void => {
+      cleanup()
+      resolvePromise()
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    void task.then(
+      () => {
+        cleanup()
+        resolvePromise()
+      },
+      () => {
+        cleanup()
+        resolvePromise()
+      },
+    )
+  })
+}
+
+/**
+ * Await one promise-like value with a watchdog and optional cancellation.
+ *
+ * The timer is unref'd so a pending mount can never keep the Host process
+ * alive after everything else has stopped. An aborted `signal` rejects
+ * immediately, which lets teardown dispose the underlying mount instead of
+ * waiting for the full startup timeout.
+ * @param value - the mount's activation promise.
+ * @param timeoutMs - watchdog budget in milliseconds.
+ * @param message - rejection message for the timeout and cancellation paths.
+ * @param signal - optional cancellation shared with the attach task.
+ */
+function withTimeout<T>(
+  value: PromiseLike<T>,
+  timeoutMs: number,
+  message: string,
+  signal?: AbortSignal,
+): Promise<T> {
   return new Promise<T>((resolvePromise, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(message))
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
+    const cleanup = (): void => {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+    const finish = (settle: () => void): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      settle()
+    }
+    const onAbort = (): void => {
+      finish(() => reject(new Error(message)))
+    }
+    if (signal?.aborted === true) {
+      onAbort()
+      return
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    timer = setTimeout(() => {
+      finish(() => reject(new Error(message)))
     }, timeoutMs)
+    timer.unref()
     value.then(
       (result) => {
-        clearTimeout(timer)
-        resolvePromise(result)
+        finish(() => resolvePromise(result))
       },
       (error: unknown) => {
-        clearTimeout(timer)
-        reject(error instanceof Error ? error : new Error(String(error)))
+        finish(() => reject(error instanceof Error ? error : new Error(String(error))))
       },
     )
   })
