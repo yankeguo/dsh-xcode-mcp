@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Xcode MCP 自动挂载",
+    "description": "当会话工作目录位于 Xcode 项目内时，自动挂载 Xcode MCP server；其他会话不会出现 Xcode 工具。"
+  }
+}

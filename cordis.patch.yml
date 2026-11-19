@@ -1,0 +1,4 @@
+- insert:
+    - id: xcode-mcp-autoload
+      name: '@yankeguo/dsh-xcode-mcp'
+      config: {}
