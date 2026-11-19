@@ -3,9 +3,19 @@
   "version": "0.1.0",
   "description": "Mount the Xcode MCP server into DeepSeek Harness sessions whose working directory is inside an Xcode project.",
   "license": "MIT",
-  "private": true,
   "type": "module",
   "icon": "./icon.svg",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yankeguo/dsh-xcode-mcp.git"
+  },
+  "homepage": "https://github.com/yankeguo/dsh-xcode-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/yankeguo/dsh-xcode-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./locale/*.json": "./locale/*.json",
@@ -34,7 +44,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify": "pnpm run typecheck && pnpm run test && pnpm run build"
+    "check:packages": "node scripts/check-packages.mjs",
+    "verify": "pnpm run typecheck && pnpm run test && pnpm run build",
+    "release:dry": "pnpm build && node scripts/stage-release.mjs --dry-run",
+    "release:stage": "pnpm build && node scripts/stage-release.mjs",
+    "release:promote": "node scripts/promote-release.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
