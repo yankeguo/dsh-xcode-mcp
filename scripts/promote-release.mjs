@@ -22,13 +22,19 @@
  *      Also validates npm login, npm stage support, gh auth, the release tag
  *      (existing tag only, never created or moved), and the notes file before
  *      the first irreversible approval.
+ *      A prerelease version (-rc.N etc.) whose staged record carries the
+ *      latest dist-tag is refused before approval: publishing it would make
+ *      the prerelease the default install. `--tag latest` with a prerelease
+ *      version fails even earlier, before any registry read or npm login check.
  *   2. Approve the staged id with inherited stdio, so npm can prompt for the
  *      one-time password interactively. Stops at the first failure and prints
  *      what remains staged.
- *   3. Create or update the GitHub Release idempotently (gh release
- *      view/edit/create --verify-tag). Prerelease versions (-rc.N etc.) are
- *      marked --prerelease (and never --latest); stable releases are explicitly
- *      kept non-prerelease on edit.
+ *   3. After approving a prerelease, prove the registry's latest dist-tag does
+ *      not point at it (npm view <pkg> dist-tags); a violation is fatal and
+ *      prints the npm dist-tag repair command. Then create or update the GitHub
+ *      Release idempotently (gh release view/edit/create --verify-tag).
+ *      Prerelease versions are marked --prerelease --latest=false; stable
+ *      releases are explicitly kept non-prerelease on edit.
  *
  * Usage:
  *   node scripts/promote-release.mjs [options]
@@ -36,13 +42,20 @@
  * Options:
  *   --version <x.y.z>    Release version. Default: root package.json version.
  *   --release-tag <tag>  GitHub Release tag. Default: v<version>.
+ *   --tag <dist-tag>     Expected npm dist-tag for this promotion. Default:
+ *                        next for a prerelease, latest for a stable version.
+ *                        A prerelease with latest is refused before any
+ *                        registry read; approval would make it the default
+ *                        install.
  *   --repo <owner/repo>  GitHub repository. Default: the origin git remote,
  *                        falling back to yankeguo/dsh-xcode-mcp.
  *   --notes-file <path>  Release notes. Default: docs/releases/v<version>.md
  *                        (relative paths resolve from the repository root).
  *   --dry-run            Full preflight and plan read-only: validates registry
- *                        state, npm login, gh auth, tag, and notes file, prints
- *                        the approve/release plan, mutates nothing.
+ *                        state, npm login, gh auth, tag, and notes file, and
+ *                        refuses a prerelease staged as latest before any
+ *                        registry read; prints the approve/release plan and
+ *                        mutates nothing.
  *   --list-only          Print the staged state of the package and exit; does
  *                        not require gh auth and never mutates.
  *   -h, --help           Show this help.
@@ -67,6 +80,10 @@ const PACKAGE_NAME = '@yankeguo/dsh-xcode-mcp'
 const DEFAULT_REPO = 'yankeguo/dsh-xcode-mcp'
 const STAGE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/u
+/** A semver prerelease carries a `-rc.1`-style suffix after the core version. */
+const PRERELEASE_PATTERN = /^\d+\.\d+\.\d+-/u
+/** npm dist-tags must not look like a semver version and must be argv-safe. */
+const DIST_TAG_PATTERN = /^[A-Za-z][A-Za-z0-9._-]*$/u
 const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/u
 /** Release tags are refs: no spaces, no leading dash (gh would read it as a flag). */
 const TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/u
@@ -83,14 +100,19 @@ Options:
   --release-tag <tag>  GitHub Release tag. Default: v<version>. The tag must
                        already exist on the remote; this script never creates,
                        moves, or deletes tags.
+  --tag <dist-tag>     Expected npm dist-tag for this promotion. Default: next
+                       for a prerelease, latest for a stable version. A
+                       prerelease with latest is refused before any registry
+                       read; approval would make it the default install.
   --repo <owner/repo>  GitHub repository. Default: the origin git remote,
                        falling back to ${DEFAULT_REPO}.
   --notes-file <path>  Release notes file. Default: docs/releases/v<version>.md
                        (relative paths resolve from the repository root).
   --dry-run            Run the complete read-only preflight (staged state,
-                       npm login, gh auth, existing remote tag, notes file) and
-                       print the approve/release plan; approve nothing and
-                       create no release.
+                       npm login, gh auth, existing remote tag, notes file),
+                       refusing a prerelease staged as latest before any
+                       registry read; print the approve/release plan, approve
+                       nothing and create no release.
   --list-only          Print the staged state of the package and exit. Used for
                        inspection/repair; no gh or notes checks, never mutates.
   -h, --help           Show this help.
@@ -111,10 +133,10 @@ Typical use:
 /**
  * Parse argv, rejecting unknown/malformed flags (exit code 2).
  * @param {string[]} argv
- * @returns {{version: string | null, releaseTag: string | null, repo: string | null, notesFile: string | null, dryRun: boolean, listOnly: boolean}}
+ * @returns {{version: string | null, releaseTag: string | null, distTag: string | null, repo: string | null, notesFile: string | null, dryRun: boolean, listOnly: boolean}}
  */
 function parseArgs (argv) {
-  const options = { version: null, releaseTag: null, repo: null, notesFile: null, dryRun: false, listOnly: false }
+  const options = { version: null, releaseTag: null, distTag: null, repo: null, notesFile: null, dryRun: false, listOnly: false }
   for (let index = 0; index < argv.length; index++) {
     const raw = argv[index]
     // Tolerate the conventional end-of-options marker so `pnpm release:* -- --flag`
@@ -144,6 +166,10 @@ function parseArgs (argv) {
       case '--release-tag':
         options.releaseTag = takeValue('--release-tag')
         if (!TAG_PATTERN.test(options.releaseTag)) throw new UsageError(`--release-tag must be a valid git ref name (got ${options.releaseTag})`)
+        break
+      case '--tag':
+        options.distTag = takeValue('--tag')
+        if (!DIST_TAG_PATTERN.test(options.distTag)) throw new UsageError(`--tag must be an npm dist-tag such as latest or next (got ${options.distTag})`)
         break
       case '--repo':
         options.repo = takeValue('--repo')
@@ -433,6 +459,41 @@ function approveStage (stageId, neutralDir) {
 }
 
 /**
+ * After approving a prerelease, prove the registry's `latest` dist-tag does not
+ * point at it. Approval publishes under the dist-tag recorded at stage time;
+ * the preflight already refuses a prerelease staged with `latest`, so this is a
+ * belt-and-braces check against registry-side surprises. A violation is fatal
+ * and prints the repair command (the package is already public at this point).
+ * @param {{name: string}} pkg
+ * @param {string} version
+ * @param {string} neutralDir
+ */
+function verifyPrereleaseDistTags (pkg, version, neutralDir) {
+  console.log('')
+  console.log(`Verifying that dist-tags.latest does not point at prerelease ${version} ...`)
+  const result = run('npm', ['view', pkg.name, 'dist-tags', '--json'], { cwd: neutralDir })
+  assertSpawned(result, 'npm')
+  if (result.status !== 0) {
+    throw new PromoteError(`cannot read dist-tags of ${pkg.name} after approval:\n${tail(result.stderr || result.stdout)}`)
+  }
+  let tags
+  try {
+    tags = JSON.parse(result.stdout)
+  } catch {
+    throw new PromoteError(`npm view ${pkg.name} dist-tags did not print JSON:\n${tail(result.stdout)}`)
+  }
+  if (tags?.latest === version) {
+    throw new PromoteError(
+      `${pkg.name}: the latest dist-tag points at prerelease ${version}. The package is already public.\n` +
+      'Repair immediately by pointing latest back at the intended stable version:\n' +
+      `  npm dist-tag add ${pkg.name}@<stable-version> latest\n` +
+      'Then re-run this script to finish the GitHub Release step.'
+    )
+  }
+  console.log(`  OK   ${pkg.name}: latest ${typeof tags?.latest === 'string' ? tags.latest : '(unset)'}`)
+}
+
+/**
  * Idempotently create or update the GitHub Release for an existing tag.
  * Prerelease versions are marked --prerelease (and --latest=false on create);
  * edits of stable releases pass --prerelease=false so a stale prerelease flag
@@ -523,7 +584,7 @@ function reportFailure (message, results, approved, version) {
   const remaining = results.filter(result =>
     result.status === 'staged' && !approved.some(item => item.name === result.pkg.name))
   if (remaining.length > 0) {
-    console.error('Still staged and not approved (approve it after fixing the failure):')
+    console.error('Still staged and not approved (fix the cause first; reject and re-stage if the staged record is wrong):')
     for (const result of remaining) {
       console.error(`  - ${result.pkg.name}@${version}  stageId=${result.stageId}`)
       console.error(`      npm stage approve ${result.stageId}    # or: npm stage reject ${result.stageId}`)
@@ -550,8 +611,8 @@ function reportFailure (message, results, approved, version) {
  * @returns {number} process exit code
  */
 function main () {
-  /** @type {{version: string | null, releaseTag: string | null, repo: string | null, notesFile: string | null, dryRun: boolean, listOnly: boolean}} */
-  let options = { version: null, releaseTag: null, repo: null, notesFile: null, dryRun: false, listOnly: false }
+  /** @type {{version: string | null, releaseTag: string | null, distTag: string | null, repo: string | null, notesFile: string | null, dryRun: boolean, listOnly: boolean}} */
+  let options = { version: null, releaseTag: null, distTag: null, repo: null, notesFile: null, dryRun: false, listOnly: false }
   /** @type {string} */
   let resolvedVersion = '(unknown)'
   /** @type {Array<{name: string, version: string, stageId: string}>} */
@@ -576,10 +637,23 @@ function main () {
       throw new PromoteError(`package.json is version ${manifest.version}, but --version says ${version}; promote exactly the version that was staged`)
     }
     const tag = options.releaseTag ?? `v${version}`
-    // Prerelease versions (-rc.N etc.) get a GitHub Release marked prerelease;
-    // the npm dist-tag itself was recorded at stage/publish time (next).
-    const prerelease = version.includes('-')
+    const prerelease = PRERELEASE_PATTERN.test(version)
     const pkg = { name: manifest.name, version }
+    // Prereleases are staged with next by default, never latest. The expected
+    // dist-tag is declarative here: --tag latest is rejected before any
+    // registry read (and under --dry-run too) because approval would publish
+    // the prerelease as the default install.
+    const distTag = options.distTag ?? (prerelease ? 'next' : 'latest')
+    if (prerelease && distTag === 'latest') {
+      throw new PromoteError(
+        `prerelease ${version} cannot be promoted with the latest dist-tag: approval would make it the default install.\n` +
+        'Reject the staged record and stage again with next:\n' +
+        `  npm stage list ${PACKAGE_NAME} --json   # find the stage id\n` +
+        '  npm stage reject <stage-id>\n' +
+        `  node scripts/stage-release.mjs --version ${version} --dist-tag next\n` +
+        'Nothing was approved.'
+      )
+    }
 
     // Neutral directory: npm must not read the repository's pnpm-only .npmrc.
     workDir = mkdtempSync(join(tmpdir(), 'dsh-xcode-mcp-promote-'))
@@ -588,8 +662,8 @@ function main () {
     const npmState = checkNpm(neutralDir)
 
     console.log(options.listOnly
-      ? `promote-release: LIST ONLY — version ${version}`
-      : `promote-release: version ${version}${prerelease ? ' (prerelease)' : ''}, tag ${tag}, repo ${repo}`)
+      ? `promote-release: LIST ONLY — version ${version}, dist-tag ${distTag}`
+      : `promote-release: version ${version}${prerelease ? ' (prerelease)' : ''}, tag ${tag}, dist-tag ${distTag}, repo ${repo}`)
     console.log(`npm ${npmState.npmVersion} as ${npmState.user}`)
     console.log('')
 
@@ -629,6 +703,22 @@ function main () {
       )
     }
 
+    // A prerelease must have been staged with a non-latest dist-tag: approving
+    // it would publish the prerelease as the default install. A missing tag on
+    // the staged record is treated as latest, matching npm's default.
+    if (prerelease) {
+      const misTagged = results.filter(result => result.status === 'staged' && (result.item?.tag ?? 'latest') === 'latest')
+      if (misTagged.length > 0) {
+        throw new PromoteError(
+          `prerelease ${version} was staged with the latest dist-tag for: ${misTagged.map(result => result.pkg.name).join(', ')}.\n` +
+          'Approving would make the prerelease the default install. Reject the staged record and stage again with next:\n' +
+          misTagged.map(result => `  npm stage reject ${result.stageId}`).join('\n') + '\n' +
+          `  node scripts/stage-release.mjs --version ${version} --dist-tag next\n` +
+          'Nothing was approved.'
+        )
+      }
+    }
+
     const notesFile = resolveNotesFile(options.notesFile, version)
     const ghState = checkGh(repo, tag, neutralDir)
     const localTag = run('git', ['rev-parse', '--verify', `refs/tags/${tag}^{commit}`], { cwd: ROOT })
@@ -665,6 +755,10 @@ function main () {
         )
       }
       approved.push({ name: result.pkg.name, version, stageId: result.stageId })
+    }
+
+    if (prerelease && approved.length > 0) {
+      verifyPrereleaseDistTags(pkg, version, neutralDir)
     }
 
     const releaseAction = ensureRelease({
