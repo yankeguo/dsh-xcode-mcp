@@ -199,7 +199,7 @@ export async function startAutoloader(
   // DEVELOPER_DIR) applied to both.
   const skillsCommand = basename(config.command) === 'xcrun' ? config.command : DEFAULT_COMMAND
   const lifecycle = new AbortController()
-  const tasks = new WeakMap<Agent, Promise<void>>()
+  const tasks = new WeakMap<Agent, { task: Promise<void>; controller: AbortController }>()
   const fibers = new Set<Fiber>()
   const pending = new Set<Promise<void>>()
   // Registration-scoped invalidators of every live per-Agent skill provider;
@@ -213,14 +213,21 @@ export async function startAutoloader(
     // settles.
     const existing = tasks.get(agent)
     if (existing !== undefined) {
-      // The shared backfill task predates this creation signal; stop waiting
-      // promptly if the caller cancels creation instead of blocking the
-      // serial listener until the backfill watchdog fires.
-      return signal === undefined ? existing : settleOnAbort(existing, signal)
+      // The shared backfill task predates this creation signal. Link the
+      // signal to the task's own controller so cancellation stops the mount
+      // too, not only this listener's wait.
+      if (signal === undefined) return existing.task
+      const unlink = linkAbort(existing.controller, signal)
+      return settleOnAbort(existing.task, signal).finally(unlink)
     }
+    const controller = new AbortController()
     const task = (async (): Promise<void> => {
       if (lifecycle.signal.aborted) return
-      const scope = signal === undefined ? lifecycle.signal : AbortSignal.any([signal, lifecycle.signal])
+      const scope = AbortSignal.any([
+        controller.signal,
+        lifecycle.signal,
+        ...(signal === undefined ? [] : [signal]),
+      ])
       let cwd: string
       try {
         cwd = await ctx.workingDirectory.ensure(agent, scope)
@@ -319,7 +326,7 @@ export async function startAutoloader(
         if (!scope.aborted) ctx.logger.warn(`xcode-mcp-autoload: cannot mount the Xcode MCP server for agent ${agent.id} at ${location.root}`, error)
       }
     })()
-    tasks.set(agent, task)
+    tasks.set(agent, { task, controller })
     pending.add(task)
     void task.then(
       () => pending.delete(task),
@@ -433,7 +440,9 @@ const xcodeSkillsProvider = {
             signal: options.signal,
             warn: (message, error) => ctx.logger.warn(message, error),
           }),
-          get: (candidate, options) => loadExportedSkill(candidate, options.signal),
+          get: (candidate, options) => loadExportedSkill(candidate, options.signal, {
+            warn: (message, error) => ctx.logger.warn(message, error),
+          }),
         }
       })
       ctx.effect(() => () => {
@@ -587,16 +596,28 @@ export async function listExportedSkills(cacheDir: string, options: {
  * Load one exported skill body, re-reading the current file on every call.
  * @param candidate - winning candidate originally returned by {@link listExportedSkills}.
  * @param signal - cancellation for the file read.
- * @returns the complete definition, or `undefined` when the bundle disappeared
- *   or its name no longer matches the candidate (the registry then rediscover).
+ * @param options - optional diagnostic sink for real read/permission failures.
+ * @returns the complete definition, or `undefined` when the bundle disappeared,
+ *   its name no longer matches the candidate, or a real read error occurred
+ *   (the registry then rediscover / surfaces the skill as unavailable).
  */
-export async function loadExportedSkill(candidate: SkillCandidate, signal?: AbortSignal): Promise<SkillDefinition | undefined> {
+export async function loadExportedSkill(
+  candidate: SkillCandidate,
+  signal?: AbortSignal,
+  options: SkillLoadOptions = {},
+): Promise<SkillDefinition | undefined> {
   const directory = typeof candidate.locator === 'string' ? candidate.locator : undefined
   if (directory === undefined) return undefined
+  const path = join(directory, 'SKILL.md')
   let parsed: ParsedSkillBundle | undefined
   try {
-    parsed = await readSkillBundle(join(directory, 'SKILL.md'), signal)
-  } catch {
+    parsed = await readSkillBundle(path, signal)
+  } catch (error) {
+    // ENOENT/ENOTDIR come back as `undefined` from readSkillBundle. Anything
+    // that reaches here is a real read problem (EACCES, EISDIR, ...): keep the
+    // skill unavailable, but do not swallow the diagnostic.
+    signal?.throwIfAborted()
+    options.warn?.(`xcode-mcp-autoload: cannot load Xcode skill at ${path}`, error)
     return undefined
   }
   if (parsed === undefined || parsed.name !== candidate.name) return undefined
@@ -606,6 +627,12 @@ export async function loadExportedSkill(candidate: SkillCandidate, signal?: Abor
     content: parsed.content,
     ...parsed.metadata === undefined ? {} : { metadata: parsed.metadata },
   }
+}
+
+/** Optional diagnostic sink for one skill body load. */
+export interface SkillLoadOptions {
+  /** Receives real read errors; missing files are reported as `undefined`, not warned. */
+  warn?: (message: string, error?: unknown) => void
 }
 
 /** Read and validate one `SKILL.md`; `undefined` when the file is absent. */
@@ -725,6 +752,22 @@ async function exists(path: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Forward one caller cancellation signal to the shared attach controller.
+ * @param controller - the attach task's own controller.
+ * @param signal - creation cancellation signal of an event that joined the task.
+ * @returns a cleanup function for the listener.
+ */
+function linkAbort(controller: AbortController, signal: AbortSignal): () => void {
+  const onAbort = (): void => controller.abort(signal.reason)
+  if (signal.aborted) {
+    onAbort()
+    return () => {}
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
+  return () => signal.removeEventListener('abort', onAbort)
 }
 
 /**

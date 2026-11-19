@@ -3,9 +3,9 @@ import type { Fiber } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type * as McpClient from '@deepseek-ai/dsh-mcp-client'
 import type {} from '@deepseek-ai/dsh-working-directory'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Config, startAutoloader } from '../src/index.ts'
-import type { XcodeProjectLocation } from '../src/index.ts'
+import type { XcodeLauncherOptions, XcodeProjectLocation } from '../src/index.ts'
 
 const PROJECT_ROOT = '/tmp/Example'
 const LOCATION: XcodeProjectLocation = { root: PROJECT_ROOT, project: 'Example.xcodeproj' }
@@ -84,7 +84,8 @@ function autoloader(
   options: {
     config?: Config
     discover?: () => Promise<XcodeProjectLocation | undefined>
-    probe?: (command: string, args: string[]) => Promise<boolean>
+    probe?: (command: string, args: string[], env?: Record<string, string>) => Promise<boolean>
+    exportSkills?: (cacheDir: string, signal: AbortSignal, options?: XcodeLauncherOptions) => Promise<void>
     mount?: Harness['mount']
   } = {},
 ): Fiber & PromiseLike<Fiber> {
@@ -95,6 +96,7 @@ function autoloader(
       discoverProjectRoot: options.discover ?? (async () => LOCATION),
       // Tests must not depend on a real Xcode installation (CI has none).
       probeBridge: options.probe ?? (async () => true),
+      ...(options.exportSkills === undefined ? {} : { exportSkills: options.exportSkills }),
       mount: options.mount ?? harnessValue.mount,
     }),
   })
@@ -115,6 +117,62 @@ describe('startAutoloader', () => {
       serverName: 'xcode',
       cwd: PROJECT_ROOT,
     })
+  })
+
+  it('passes config.env and a custom xcrun path to probe and skills export', async () => {
+    const agents: Agent[] = []
+    const h = harness({ agents })
+    const { agent } = await agentRig(h.root, 'agent-toolchain')
+    agents.push(agent)
+    const env = { DEVELOPER_DIR: '/Applications/Xcode.app/Contents/Developer' }
+    const probes: Array<{ command: string; args: string[]; env: Record<string, string> | undefined }> = []
+    const exports: Array<XcodeLauncherOptions | undefined> = []
+
+    await autoloader(h, {
+      config: Config({ command: '/opt/tools/xcrun', args: ['mcpbridge'], env }),
+      probe: async (command, args, seenEnv) => {
+        probes.push({ command, args, env: seenEnv })
+        return true
+      },
+      exportSkills: async (_cacheDir, _signal, options) => {
+        exports.push(options)
+      },
+    })
+    await vi.waitFor(() => expect(exports).toHaveLength(1))
+
+    expect(probes).toHaveLength(2)
+    for (const call of probes) {
+      expect(call).toEqual({ command: '/opt/tools/xcrun', args: ['mcpbridge'], env })
+    }
+    expect(exports[0]).toEqual({ command: '/opt/tools/xcrun', env })
+    expect(h.mounted).toHaveLength(1)
+  })
+
+  it('falls back to system xcrun for skills with a non-xcrun launcher', async () => {
+    const agents: Agent[] = []
+    const h = harness({ agents })
+    const { agent } = await agentRig(h.root, 'agent-custom-launcher')
+    agents.push(agent)
+    const env = { DEVELOPER_DIR: '/Applications/Xcode.app/Contents/Developer' }
+    const probes: Array<{ command: string; args: string[]; env: Record<string, string> | undefined }> = []
+    const exports: Array<XcodeLauncherOptions | undefined> = []
+
+    await autoloader(h, {
+      config: Config({ command: '/bin/echo', args: ['serve'], env }),
+      probe: async (command, args, seenEnv) => {
+        probes.push({ command, args, env: seenEnv })
+        return true
+      },
+      exportSkills: async (_cacheDir, _signal, options) => {
+        exports.push(options)
+      },
+    })
+    await vi.waitFor(() => expect(exports).toHaveLength(1))
+
+    expect(probes).toContainEqual({ command: '/bin/echo', args: ['serve'], env })
+    expect(probes).toContainEqual({ command: 'xcrun', args: ['mcpbridge'], env })
+    expect(exports[0]).toEqual({ command: 'xcrun', env })
+    expect(h.mounted).toHaveLength(1)
   })
 
   it('mounts when an Agent is created after activation', async () => {
@@ -359,6 +417,36 @@ describe('startAutoloader', () => {
       await expect(creation).resolves.toBeUndefined()
       expect(Date.now() - startedAt).toBeLessThan(5_000)
     } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('does not mount after a cancelled creation aborts the in-flight backfill', async () => {
+    const agents: Agent[] = []
+    const h = harness({ agents })
+    const { agent } = await agentRig(h.root, 'agent-backfill-cancelled-mount')
+    agents.push(agent)
+    let releaseDiscovery: (() => void) | undefined
+    const discoveryGate = new Promise<void>((resolve) => { releaseDiscovery = resolve })
+
+    const fiber = autoloader(h, {
+      discover: async () => {
+        await discoveryGate
+        return LOCATION
+      },
+    })
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      const controller = new AbortController()
+      const creation = h.root.serial('agent/created', { agent, source: 'startup', signal: controller.signal })
+      controller.abort()
+      releaseDiscovery?.()
+
+      await expect(creation).resolves.toBeUndefined()
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(h.mounted).toHaveLength(0)
+    } finally {
+      releaseDiscovery?.()
       await fiber.dispose()
     }
   })

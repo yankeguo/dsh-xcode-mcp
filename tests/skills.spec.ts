@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -224,6 +224,46 @@ describe('embedded Xcode skills', () => {
     })
   })
 
+  it('aborts an in-flight skills export when the plugin is disposed', async () => {
+    const root = new Context()
+    cleanups.push(() => root.fiber.dispose())
+    root.provide('workingDirectory', { ensure: async () => PROJECT_ROOT } as never)
+    root.provide('agents', { list: () => [] } as never)
+    const cacheDir = await temporaryDirectory()
+    let started: (() => void) | undefined
+    const startedPromise = new Promise<void>((resolve) => { started = resolve })
+    let aborted = false
+    const fiber = root.plugin({
+      name: 'test-xcode-mcp-autoload',
+      inject: ['workingDirectory', 'agents'],
+      apply: (ctx: Context) => startAutoloader(ctx, Config({}), {
+        discoverProjectRoot: async () => LOCATION,
+        probeBridge: async () => true,
+        skillsCacheDir: cacheDir,
+        exportSkills: async (_dir, signal) => {
+          started?.()
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) {
+              aborted = true
+              resolve()
+              return
+            }
+            signal.addEventListener('abort', () => {
+              aborted = true
+              resolve()
+            }, { once: true })
+          })
+        },
+      }),
+    })
+    await fiber
+    await startedPromise
+
+    await fiber.dispose()
+
+    expect(aborted).toBe(true)
+  })
+
   it('skips malformed bundles and keeps their readable siblings', async () => {
     const r = await rig()
     await r.autoloader({
@@ -273,11 +313,25 @@ describe('embedded Xcode skills', () => {
     })
   })
 
-  it('keeps the MCP mount working when the skills provider fails asynchronously', async () => {
+  it('warns and cleans the invalidator when provider registration fails asynchronously', async () => {
     const root = new Context()
     cleanups.push(() => root.fiber.dispose())
+    const warnings: string[] = []
+    root.logger.exporter({
+      levels: { default: 1 },
+      export: ({ type, args }) => {
+        if (type === 'warn') warnings.push(String(args[0]))
+      },
+    })
+    let invalidateCalls = 0
     root.provide('skills', {
-      registerProvider() {
+      registerProvider(create: (control: { signal: AbortSignal; invalidate: () => void }) => unknown) {
+        const control = {
+          signal: new AbortController().signal,
+          invalidate: () => { invalidateCalls += 1 },
+        }
+        // The real registry calls the factory before layer insertion.
+        create(control)
         throw new Error('duplicate provider')
       },
     } as never)
@@ -291,6 +345,8 @@ describe('embedded Xcode skills', () => {
         stubCtx.effect(() => () => {})
       },
     }
+    let releaseExport: (() => void) | undefined
+    const exportGate = new Promise<void>((resolve) => { releaseExport = resolve })
     const fiber = root.plugin({
       name: 'test-xcode-mcp-autoload',
       inject: ['workingDirectory', 'agents'],
@@ -298,7 +354,7 @@ describe('embedded Xcode skills', () => {
         discoverProjectRoot: async () => LOCATION,
         probeBridge: async () => true,
         skillsCacheDir: cacheDir,
-        exportSkills: async () => {},
+        exportSkills: async () => { await exportGate },
         mount(agent, config) {
           mounted.push(config)
           return agent.ctx.plugin(stub, config)
@@ -309,9 +365,16 @@ describe('embedded Xcode skills', () => {
     const { agent } = await rigScopedAgent(root, 'agent-provider-failed')
 
     await expect(root.serial('agent/created', { agent, source: 'startup' })).resolves.toBeUndefined()
-    // Let the child plugin's asynchronous apply failure settle.
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await vi.waitFor(() => {
+      expect(warnings.some(message => message.includes('cannot register Xcode skills'))).toBe(true)
+    })
     expect(mounted).toHaveLength(1)
+
+    // A leaked invalidator would be called by the completed export below.
+    releaseExport?.()
+    await vi.waitFor(() => expect(invalidateCalls).toBe(0))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(invalidateCalls).toBe(0)
   })
 
   it('unregisters the provider when the Agent is disposed', async () => {
@@ -405,10 +468,54 @@ describe('skills cache helpers', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot list Xcode skills'), expect.any(Error))
   })
 
+  it('reads DSH_HOME from process.env when no env argument is given', () => {
+    const previous = process.env['DSH_HOME']
+    try {
+      process.env['DSH_HOME'] = '/tmp/dsh-home-from-process'
+      expect(defaultSkillsCacheDir()).toBe('/tmp/dsh-home-from-process/cache/dsh-xcode-mcp/skills')
+    } finally {
+      if (previous === undefined) delete process.env['DSH_HOME']
+      else process.env['DSH_HOME'] = previous
+    }
+  })
+
   it('treats a missing cache directory as a valid empty state', async () => {
     const directory = await temporaryDirectory()
     await expect(listExportedSkills(join(directory, 'absent'))).resolves.toEqual([])
   })
+
+  it('warns and returns undefined when the loaded bundle hits EISDIR', async () => {
+    const directory = await temporaryDirectory()
+    await writeSkill(directory, 'swiftui-specialist', VALID_FRONTMATTER)
+    const [candidate] = await listExportedSkills(directory)
+    expect(candidate).toBeDefined()
+    const skillFile = join(directory, 'swiftui-specialist', 'SKILL.md')
+    await rm(skillFile)
+    await mkdir(skillFile)
+    const warn = vi.fn()
+
+    await expect(loadExportedSkill(candidate!, undefined, { warn })).resolves.toBeUndefined()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot load Xcode skill'), expect.any(Error))
+  })
+
+  it.skipIf(process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0))(
+    'warns and returns undefined when the loaded bundle hits EACCES',
+    async () => {
+      const directory = await temporaryDirectory()
+      await writeSkill(directory, 'swiftui-specialist', VALID_FRONTMATTER)
+      const [candidate] = await listExportedSkills(directory)
+      expect(candidate).toBeDefined()
+      const skillFile = join(directory, 'swiftui-specialist', 'SKILL.md')
+      await chmod(skillFile, 0o000)
+      const warn = vi.fn()
+      try {
+        await expect(loadExportedSkill(candidate!, undefined, { warn })).resolves.toBeUndefined()
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot load Xcode skill'), expect.any(Error))
+      } finally {
+        await chmod(skillFile, 0o644)
+      }
+    },
+  )
 
   it('returns undefined when a loaded bundle no longer matches the candidate name', async () => {
     const directory = await temporaryDirectory()
