@@ -451,6 +451,42 @@ describe('startAutoloader', () => {
     }
   })
 
+  it('disposes a mount whose handshake is cancelled by creation abort', async () => {
+    const agents: Agent[] = []
+    const h = harness({ agents })
+    const { agent } = await agentRig(h.root, 'agent-handshake-cancelled')
+    agents.push(agent)
+    let attempts = 0
+    let disconnects = 0
+    const hung = {
+      then() {},
+      dispose: async () => {
+        disconnects += 1
+      },
+    } as unknown as Fiber & PromiseLike<Fiber>
+
+    const fiber = autoloader(h, {
+      config: Config({ startupTimeoutMs: 10_000, skills: false }),
+      mount: () => {
+        attempts += 1
+        return hung
+      },
+    })
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(attempts).toBe(1)
+      const controller = new AbortController()
+      const creation = h.root.serial('agent/created', { agent, source: 'startup', signal: controller.signal })
+      controller.abort()
+
+      await expect(creation).resolves.toBeUndefined()
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(disconnects).toBe(1)
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
   it('disconnects the MCP client when the Agent is disposed', async () => {
     const h = harness()
     await autoloader(h)

@@ -283,6 +283,29 @@ describe('embedded Xcode skills', () => {
     })
   })
 
+  it('warns through the provider when skills.get hits an unreadable SKILL.md', async () => {
+    const r = await rig()
+    const warnings: string[] = []
+    r.root.logger.exporter({
+      levels: { default: 1 },
+      export: ({ type, args }) => {
+        if (type === 'warn') warnings.push(String(args[0]))
+      },
+    })
+    await r.autoloader()
+    const { agent, key } = await r.scopedAgent('agent-get-unreadable')
+    await r.root.serial('agent/created', { agent, source: 'startup' })
+    await vi.waitFor(async () => {
+      expect(await r.root.skills.list({ scope: key, cwd: PROJECT_ROOT })).toHaveLength(1)
+    })
+    const skillFile = join(r.cacheDir, 'swiftui-specialist', 'SKILL.md')
+    await rm(skillFile)
+    await mkdir(skillFile)
+
+    await expect(r.root.skills.get('swiftui-specialist', { scope: key, cwd: PROJECT_ROOT })).resolves.toBeUndefined()
+    expect(warnings.some(message => message.includes('cannot load Xcode skill'))).toBe(true)
+  })
+
   it('warns when a bundle file cannot be read', async () => {
     const directory = await temporaryDirectory()
     await writeSkill(directory, 'swiftui-specialist', VALID_FRONTMATTER)
