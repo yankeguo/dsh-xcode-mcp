@@ -32,7 +32,10 @@
   ],
   "dsh": {
     "bundle": {
-      "patch": "./cordis.patch.yml"
+      "patch": "./cordis.patch.yml",
+      "platforms": [
+        "darwin"
+      ]
     }
   },
   "engines": {
@@ -51,12 +54,12 @@
     "release:promote": "node scripts/promote-release.mjs"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/cordis": ">=4.0.5 <4.2.0",
     "@deepseek-ai/dsh-agent": ">=0.2.1-rc.1 <0.3.0",
     "@deepseek-ai/dsh-mcp-client": ">=0.2.1-rc.1 <0.3.0",
     "@deepseek-ai/dsh-skill": ">=0.2.1-rc.1 <0.3.0",
     "@deepseek-ai/dsh-working-directory": ">=0.2.1-rc.1 <0.3.0",
-    "@deepseek-ai/schemastery": "~3.19.0"
+    "@deepseek-ai/schemastery": ">=3.18.5 <3.20.0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-skill": {

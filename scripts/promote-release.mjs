@@ -498,16 +498,16 @@ function verifyPrereleaseDistTags (pkg, version, neutralDir) {
 
 /**
  * Idempotently create or update the GitHub Release for an existing tag.
- * Prerelease versions are marked --prerelease (and --latest=false on create);
- * edits of stable releases pass --prerelease=false so a stale prerelease flag
- * cannot survive an idempotent re-run.
+ * Prerelease versions are marked --prerelease and --latest=false on both create
+ * and edit; edits of stable releases pass --prerelease=false so a stale
+ * prerelease flag cannot survive an idempotent re-run.
  * @param {{repo: string, tag: string, notesFile: string, neutralDir: string, releaseExists: boolean, version: string, prerelease: boolean}} options
  * @returns {'created' | 'updated'}
  */
 function ensureRelease (options) {
   const { repo, tag, notesFile, neutralDir, releaseExists, prerelease } = options
   const args = releaseExists
-    ? ['release', 'edit', tag, '--repo', repo, '--title', tag, '--notes-file', notesFile, '--verify-tag', prerelease ? '--prerelease' : '--prerelease=false']
+    ? ['release', 'edit', tag, '--repo', repo, '--title', tag, '--notes-file', notesFile, '--verify-tag', ...(prerelease ? ['--prerelease', '--latest=false'] : ['--prerelease=false'])]
     : ['release', 'create', tag, '--repo', repo, '--title', tag, '--notes-file', notesFile, '--verify-tag', ...(prerelease ? ['--prerelease', '--latest=false'] : [])]
   const result = run('gh', args, { cwd: neutralDir, stdio: 'inherit' })
   assertSpawned(result, 'gh')

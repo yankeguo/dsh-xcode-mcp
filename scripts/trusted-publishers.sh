@@ -4,10 +4,10 @@
 # scoped to STAGED publishing only (--allow-stage-publish).
 #
 # Run this once after the package's FIRST publish (npm requires the package to
-# exist before a trusted publisher can be attached; this package has not been
-# published yet — see docs/PUBLISHING.md "新包首次发布"). Afterward
-# .github/workflows/publish.yml stages new versions with a short-lived OIDC
-# token and no NPM_TOKEN secret at all; a human then approves the staged
+# exist before a trusted publisher can be attached; this package is already
+# public — `0.0.0-stage` and `0.1.0-rc.1` — see docs/PUBLISHING.md "新包首次发布").
+# Afterward .github/workflows/publish.yml stages new versions with a short-lived
+# OIDC token and no NPM_TOKEN secret at all; a human then approves the staged
 # version locally with scripts/promote-release.mjs.
 #
 # The CI workflow never publishes directly. A trusted-publisher record created

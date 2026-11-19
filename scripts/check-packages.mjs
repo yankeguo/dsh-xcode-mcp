@@ -171,6 +171,10 @@ if (manifest === null) {
   check('dsh.bundle.patch points at an existing cordis.patch.yml',
     patchPath !== null && existsSync(patchPath) && patchPath === join(ROOT, 'cordis.patch.yml'),
     `found ${JSON.stringify(patch)}; expected "./cordis.patch.yml" resolving to an existing file`)
+  const platforms = manifest.dsh?.bundle?.platforms
+  check('dsh.bundle.platforms admits only macOS',
+    Array.isArray(platforms) && platforms.length === 1 && platforms[0] === 'darwin',
+    `found ${JSON.stringify(platforms)}; this bundle runs xcrun and only works on macOS`)
   const icon = manifest.icon
   const iconPath = typeof icon === 'string' ? resolve(ROOT, icon) : null
   check('icon field points at an existing icon.svg',
@@ -216,8 +220,8 @@ if (manifest === null) {
   // ---- DSH dependency placement ---------------------------------------------
   // Host runtime packages must be peers (DSH linked-root resolution routes them
   // to the installation instance); a direct/optional dependency would install a
-  // second physical copy. This plugin is pure TS: it ships no launcher script
-  // and declares no runtime dependencies at all.
+  // second physical copy. This plugin is pure TS: it ships no launcher script,
+  // and its only runtime dependency is the `yaml` parser.
   const dependencies = manifest.dependencies ?? {}
   const optionalDependencies = manifest.optionalDependencies ?? {}
   const peers = manifest.peerDependencies ?? {}
@@ -265,10 +269,11 @@ if (manifest === null) {
 }
 
 /**
- * Parse the pnpm-lock.yaml root importer with a small line-based reader (the
- * repo has no YAML parser dependency and must not gain one for this check).
- * pnpm v9 lockfiles record dependencies/devDependencies/optionalDependencies
- * per importer; peerDependencies are NOT recorded, so they are not compared.
+ * Parse the pnpm-lock.yaml root importer with a small line-based reader (this
+ * check stays stdlib-only; the runtime package's `yaml` dependency is unrelated
+ * and must not be imported here). pnpm v9 lockfiles record
+ * dependencies/devDependencies/optionalDependencies per importer;
+ * peerDependencies are NOT recorded, so they are not compared.
  * @param {string} lockText
  * @returns {{importers: string[], sections: Record<string, Map<string, string>>} | null}
  */

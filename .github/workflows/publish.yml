@@ -32,9 +32,9 @@ name: publish
 # recreated; see docs/PUBLISHING.md.
 #
 # npm's requirements for trusted publishing:
-#   - the package already exists on the registry (this package has NOT been
-#     published yet: the first publish is a manual one-off, documented in
-#     docs/PUBLISHING.md "新包首次发布"),
+#   - the package already exists on the registry (it does: `0.0.0-stage` and
+#     `0.1.0-rc.1` are public; a brand-new package needs the manual first
+#     publish documented in docs/PUBLISHING.md "新包首次发布"),
 #   - this workflow file lives at .github/workflows/publish.yml,
 #   - the runner is GitHub-hosted (self-hosted runners are not supported),
 #   - repository/workflow/environment claims match the trust configuration.
