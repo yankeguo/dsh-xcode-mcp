@@ -62,17 +62,22 @@ Installing the bundle is enough — no manual skill installation. Xcode 26 ships
 ## Installation
 
 ```sh
-# CLI (desktop profile)
+# CLI (desktop profile). After rc.2 approval, pin the exact release:
+dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.2
+
+# Unversioned install follows latest, which remains rc.1:
 dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp
 
 # or in the Web UI: Plugins → Add plugin → @yankeguo/dsh-xcode-mcp
 ```
 
-> Current registry state (2026-11-19): there is no stable release yet, and both
-> the `latest` and `next` dist-tags point at `0.1.0-rc.1` (an earlier
-> `0.0.0-stage` probe version also exists). An unversioned install therefore
-> resolves to the rc today; add `@0.1.0-rc.1` to pin it. A maintainer should move
-> `latest` to a stable version once one exists.
+> Current registry state (2026-11-19): there is no stable release yet. `latest`
+> and `next` still point at `0.1.0-rc.1`; `0.1.0-rc.2` is the current
+> audit-fix release candidate. The `v0.1.0-rc.2` tag workflow stages it with
+> `next`; it becomes installable only after a successful stage and maintainer
+> approval. `0.0.0-stage` is an earlier probe version. Pin the exact rc
+> (`@0.1.0-rc.2` after approval, `@0.1.0-rc.1` until then); a maintainer should
+> move `latest` to a stable version once one exists.
 
 For local development, install this checkout as a linked bundle through DSH's plugin manager (`install_bundle` pointed at this directory); run `pnpm build` first so `lib/index.js` exists, and rebuild after source changes.
 

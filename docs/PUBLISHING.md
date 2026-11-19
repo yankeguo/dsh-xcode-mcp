@@ -46,7 +46,8 @@ typecheck、test、build、`check:packages`；它不碰 registry，也不需要�
 - 包必须**已存在于 npm registry**：npm 的 trusted publishing 只对已发布的包生效。
   若包尚未首发，首次发布是一次性手工操作（见下文“新包首次发布”）。本仓库已经
   完成首发：更早的 `0.0.0-stage` 探针版本与 `0.1.0-rc.1` 都已公开；目前还没有
-  稳定版，registry 的 `latest` 与 `next` 都指向 `0.1.0-rc.1`。
+  稳定版，registry 的 `latest` 与 `next` 都指向 `0.1.0-rc.1`。`0.1.0-rc.2` 由
+  `v0.1.0-rc.2` tag 触发 CI stage（`next`）；只有 stage 成功且人工 approve 后才公开。
 - GitHub Actions 运行在 **GitHub-hosted runner**（npm 目前不支持 self-hosted
   runner 的 trusted publishing）。
 - 仓库公开（`yankeguo/dsh-xcode-mcp`）：provenance 需要公开仓库 + 公开包。
@@ -432,9 +433,11 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
   的 `version` 已 bump、lockfile 已同步。
 
 > **当前 registry 实况（2026-11-19）**：尚无稳定版，`latest` 与 `next` 都指向
-> `0.1.0-rc.1`；更早还有一个 `0.0.0-stage` 探针版本。稳定版发布后，维护者应执行
+> `0.1.0-rc.1`；更早还有一个 `0.0.0-stage` 探针版本。`0.1.0-rc.2` 由
+> `v0.1.0-rc.2` tag 触发 CI stage（`next`）；只有 stage 成功且人工 approve 后才
+> 公开，批准前 npm 上不存在该版本。稳定版发布后，维护者应执行
 > `npm dist-tag add @yankeguo/dsh-xcode-mcp@<stable> latest` 把默认安装移回稳定版。
-> 本次审计未修改任何 dist-tag。
+> 本次发布未修改任何 dist-tag。
 
 ## 脚本参考
 
@@ -638,9 +641,10 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp
 # 或在 Web：Plugins → Add plugin → 输入 @yankeguo/dsh-xcode-mcp
 ```
 
-> 当前 registry 还没有稳定版，`latest` 与 `next` 都指向 `0.1.0-rc.1`，所以不指定
-> 版本也会解析到 rc；仍建议显式指定版本，以免稳定版发布后行为变化：
-> `dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.1`。
+> 当前 registry 还没有稳定版，`latest` 与 `next` 都指向 `0.1.0-rc.1`；`0.1.0-rc.2`
+> 需 stage 成功并人工 approve 后才公开。批准后安装精确版本 `@0.1.0-rc.2`；批准前使用
+> `@0.1.0-rc.1`。不要依赖不指定版本的安装（它跟随 `latest`，仍是 rc.1）：
+> `dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.2`。
 
 运行前提：**macOS + Xcode 26 或更新**（`xcrun mcpbridge` 可用，`xcode-select`
 指向该 Xcode），使用工具期间 Xcode 处于运行状态。本插件是纯 TS 实现：发现
