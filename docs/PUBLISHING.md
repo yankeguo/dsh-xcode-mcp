@@ -265,7 +265,8 @@ Release**，先补齐 notes（避免 npm 已公开却没有发布说明）。
 pnpm install --frozen-lockfile     # 锁文件一致
 pnpm verify                        # typecheck + test + build（lib/ 被 gitignore，必须现构建）
 pnpm check:packages                # 单包不变式：manifest/engines/files/exports/locale/icon/
-                                   #   平台/依赖放置/构建产物/lockfile/CI pin/staged 契约
+                                   #   平台/依赖放置/构建产物/lockfile/CI pin/staged 契约/
+                                   #   README（无 frontmatter、链接为绝对 GitHub URL）
 pnpm release:dry                   # = pnpm build && node scripts/stage-release.mjs --dry-run
                                    #   本地打包 + npm 预检，不上传、不创建 stage id
 ```
@@ -476,7 +477,9 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
   0.3 时需更新该范围并回归。`check-packages.mjs` 会校验该范围不被无意改动。
 - 破坏性变更遵循 semver；预发布版本使用 `-rc.N` / `-alpha.N` 后缀。
 - 每次发版前同步 README 与 `docs/releases/v<version>.md`，并确认根 `package.json`
-  的 `version` 已 bump、lockfile 已同步。
+  的 `version` 已 bump、lockfile 已同步。README 只面向使用者（安装/配置/使用/
+  限制/排障 + 文档链接）：发布状态、版本矩阵与 changelog 只写在本文档与 release
+  notes，README 只链接 [docs/releases](./releases/) 与 GitHub Releases。
 
 > **当前 registry 实况（2026-11-21）**：`0.1.0-rc.3` 已由 `v0.1.0-rc.3` tag
 > 触发 CI stage 并在 npmjs.com 网页 approve 公开，`latest` 与 `next` 都指向它；
@@ -752,6 +755,9 @@ DSH 插件管理器与插件市场显示的是**用户友好标题与一句话�
 
 ## 参考
 
+- 开发环境、测试与文档约定：[CONTRIBUTING.md](./CONTRIBUTING.md)
+- 内部设计与生命周期：[DESIGN.md](./DESIGN.md)
+- 兼容矩阵与已知边界：[COMPATIBILITY.md](./COMPATIBILITY.md)
 - npm staged publishing：[npm stage](https://docs.npmjs.com/cli/v11/commands/npm-stage)、`npm help stage`
 - npm 文档：[Trusted publishing for npm packages](https://docs.npmjs.com/trusted-publishers/)
 - `npm trust` 命令：`npm help trust` / [npm-trust](https://docs.npmjs.com/cli/v11/commands/npm-trust)

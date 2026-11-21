@@ -8,6 +8,9 @@
  *   - engines (exact engines.dsh compatibility range, engines.node present),
  *   - files/exports wiring (lib, cordis.patch.yml, locale/*.json, icon.svg,
  *     README.md, LICENSE; ".", "./locale/*.json", "./icon", "./package.json"),
+ *   - README.md is npm-ready: no YAML frontmatter (npm renders it as body
+ *     text) and no repo-relative links/images (npm ships only the README, so
+ *     such links are dead on npmjs.com),
  *   - DSH bundle contract (dsh.bundle.patch -> existing cordis.patch.yml,
  *     icon <= 256 KiB, locale/en.json + locale/zh.json display metadata),
  *   - DSH dependency placement (host packages are peers, never direct or
@@ -455,13 +458,24 @@ check('stage-release.mjs rejects an explicit latest dist-tag for prereleases',
   /options\.distTag === 'latest'/u.test(stageScript) && /prerelease/u.test(stageScript),
   'a prerelease staged with latest would make npm install resolve to it on approval; reject it')
 // The approval step moved from a local script to the npmjs.com web UI, and the
-// GitHub Release is now created manually. Keep those two documentation
-// contracts checked: the next-step summary must describe the web approval and
-// the `gh release create --verify-tag` command (printed, not executed).
+// GitHub Release is now created manually. The user-facing README must not
+// resurrect the removed local promote workflow (the current procedure lives in
+// docs/PUBLISHING.md), and it must stay readable on npmjs.com: npm renders the
+// README verbatim (YAML frontmatter shows up as body text) and ships only that
+// file, so repo-relative links and images would be dead there.
 const readme = existsSync(join(ROOT, 'README.md')) ? readFileSync(join(ROOT, 'README.md'), 'utf8') : ''
 check('README.md does not reference the removed promote script',
   !/promote-release/u.test(readme),
-  'README must describe npmjs.com web approval and the manual "gh release create --verify-tag" step instead')
+  'remove the promote-release reference; the release procedure lives in docs/PUBLISHING.md (npmjs.com approval + manual "gh release create --verify-tag")')
+check('README.md has no YAML frontmatter (npm renders it as body text)',
+  !/^---\r?\n/u.test(readme),
+  'remove the leading --- metadata block; the DSH-internal frontmatter convention does not apply to a package published to npm')
+const repoRelativeReadmeLink = [...readme.matchAll(/!?\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/gu)]
+  .map(match => match[1])
+  .find(target => !/^(?:https:\/\/|#|mailto:)/u.test(target))
+check('README.md links use absolute HTTPS URLs (npm cannot resolve repo-relative links)',
+  repoRelativeReadmeLink === undefined,
+  `found repo-relative link ${JSON.stringify(repoRelativeReadmeLink)}; use https://github.com/yankeguo/dsh-xcode-mcp/blob/main/... and raw.githubusercontent.com for images`)
 check('publish.yml summary points at npmjs.com web approval',
   /npmjs\.com/u.test(publishExec),
   'the next-step summary must tell the maintainer to approve the staged version on npmjs.com')
