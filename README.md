@@ -62,26 +62,23 @@ Installing the bundle is enough — no manual skill installation. Xcode 26 ships
 ## Installation
 
 ```sh
-# CLI (desktop profile). After rc.3 approval, pin the exact release:
-dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.3
-
-# Current published rc / latest is still 0.1.0-rc.1:
-dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.1
-
-# Unversioned install follows latest, also 0.1.0-rc.1:
+# CLI (desktop profile). 0.1.0 is the first stable release; after approval the
+# default install (latest) resolves to it:
+dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0
 dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp
+
+# Until 0.1.0 is approved, latest still points at the public 0.1.0-rc.3:
+dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.3
 
 # or in the Web UI: Plugins → Add plugin → @yankeguo/dsh-xcode-mcp
 ```
 
-> Current registry state (2026-11-19): there is no stable release yet. `latest`
-> and `next` both point at `0.1.0-rc.1`; `0.0.0-stage` is an earlier probe
-> version. `0.1.0-rc.2` was staged but its staged record was rejected, so it was
-> never published. `0.1.0-rc.3` is the current candidate: its tag workflow
-> stages it with `next`, and it becomes installable only after a successful
-> stage and maintainer approval. `latest` remains `0.1.0-rc.1`. Pin
-> `@0.1.0-rc.3` after approval, `@0.1.0-rc.1` until then; a maintainer should
-> move `latest` to a stable version once one exists.
+> Current registry state (2026-11-21): `0.1.0-rc.3` is public and `latest` and
+> `next` both point at it; `0.0.0-stage` and `0.1.0-rc.1` are earlier public
+> versions, and `0.1.0-rc.2` was staged but rejected, so it was never
+> published. `0.1.0` is the first stable release: its `v0.1.0` tag workflow
+> stages it with the `latest` dist-tag, and a maintainer approves it afterwards
+> (CI only stages). After approval, unversioned installs resolve to `0.1.0`.
 
 For local development, install this checkout as a linked bundle through DSH's plugin manager (`install_bundle` pointed at this directory); run `pnpm build` first so `lib/index.js` exists, and rebuild after source changes.
 

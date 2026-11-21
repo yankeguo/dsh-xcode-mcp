@@ -45,11 +45,11 @@ typecheck、test、build、`check:packages`；它不碰 registry，也不需要�
 - npm 账号已开启 **2FA**：approve / reject 必须交互式输入一次性密码（OTP）。
 - 包必须**已存在于 npm registry**：npm 的 trusted publishing 只对已发布的包生效。
   若包尚未首发，首次发布是一次性手工操作（见下文“新包首次发布”）。本仓库已经
-  完成首发：更早的 `0.0.0-stage` 探针版本与 `0.1.0-rc.1` 都已公开；目前还没有
-  稳定版，registry 的 `latest` 与 `next` 都指向 `0.1.0-rc.1`。`0.1.0-rc.2` 由
-  `v0.1.0-rc.2` tag 触发 CI stage（`next`），stage 成功但 staged 记录随后被
-  reject，因此未公开。`0.1.0-rc.3` 由 `v0.1.0-rc.3` tag 触发 CI stage（`next`）；
-  只有 stage 成功且人工 approve 后才公开。
+  完成首发：更早的 `0.0.0-stage` 探针版本与 `0.1.0-rc.1` 都已公开；`0.1.0-rc.3`
+  已由 `v0.1.0-rc.3` tag 触发 CI stage 并人工 approve 公开，registry 的 `latest`
+  与 `next` 都指向它。`0.1.0-rc.2` 由 `v0.1.0-rc.2` tag 触发 CI stage（`next`），
+  stage 成功但 staged 记录随后被 reject，因此未公开。`0.1.0` 是首个稳定版：由
+  `v0.1.0` tag 触发 CI 按 `latest` stage；只有 stage 成功且人工 approve 后才公开。
 - GitHub Actions 运行在 **GitHub-hosted runner**（npm 目前不支持 self-hosted
   runner 的 trusted publishing）。
 - 仓库公开（`yankeguo/dsh-xcode-mcp`）：provenance 需要公开仓库 + 公开包。
@@ -138,7 +138,7 @@ npm 的 trusted publishing 要求包**已经存在**于 registry，因此第一�
 - 稳定版（`x.y.z`）：`--tag latest`；
 - 预发布版（`x.y.z-rc.N` 等）：`--tag next`，**绝不 latest**。注意 npm 对预发布
   版本**同样默认 latest**，必须显式传 `--tag next`，否则 `npm install <pkg>`
-  会解析到预发布版本。发布后仍要 `npm view <pkg> dist-tags` 核对：本仓库当前
+  会解析到预发布版本。发布后仍要 `npm view <pkg> dist-tags` 核对：本仓库当时
   `latest` 与 `next` 都指向 `0.1.0-rc.1`，说明单靠 `--tag next` 不保证 latest
   不落到 rc；必要时用 `npm dist-tag add <pkg>@<version> latest` 纠正。
 
@@ -435,13 +435,13 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
 - 每次发版前同步 README 与 `docs/releases/v<version>.md`，并确认根 `package.json`
   的 `version` 已 bump、lockfile 已同步。
 
-> **当前 registry 实况（2026-11-19）**：尚无稳定版，`latest` 与 `next` 都指向
-> `0.1.0-rc.1`；更早还有一个 `0.0.0-stage` 探针版本。`0.1.0-rc.2` 的 stage
-> 成功但 staged 记录已被 reject，因此 npm 上不存在该版本。`0.1.0-rc.3` 由
-> `v0.1.0-rc.3` tag 触发 CI stage（`next`）；只有 stage 成功且人工 approve 后才
-> 公开。稳定版发布后，维护者应执行
-> `npm dist-tag add @yankeguo/dsh-xcode-mcp@<stable> latest` 把默认安装移回稳定版。
-> 本次发布未修改任何 dist-tag。
+> **当前 registry 实况（2026-11-21）**：`0.1.0-rc.3` 已由 `v0.1.0-rc.3` tag
+> 触发 CI stage 并人工 approve 公开，`latest` 与 `next` 都指向它；更早还有
+> `0.0.0-stage` 与 `0.1.0-rc.1`，而 `0.1.0-rc.2` 的 staged 记录已被 reject，
+> npm 上不存在该版本。`0.1.0` 是首个稳定版：`v0.1.0` tag 触发 CI 按 `latest`
+> stage；promote 预检会核对 staged 记录的 dist-tag，approve 后 `latest` 应指向
+> `0.1.0`。若 approve 后 npm 仍把 `latest` 留在 rc，维护者执行
+> `npm dist-tag add @yankeguo/dsh-xcode-mcp@0.1.0 latest` 纠正后再建 Release。
 
 ## 脚本参考
 
@@ -645,11 +645,10 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp
 # 或在 Web：Plugins → Add plugin → 输入 @yankeguo/dsh-xcode-mcp
 ```
 
-> 当前 registry 还没有稳定版，`latest` 与 `next` 都指向 `0.1.0-rc.1`；`0.1.0-rc.2`
-> 的 staged 记录已被 reject，未公开。`0.1.0-rc.3` 需 stage 成功并人工 approve
-> 后才公开：批准后安装精确版本 `@yankeguo/dsh-xcode-mcp@0.1.0-rc.3`，批准前使用
-> `@yankeguo/dsh-xcode-mcp@0.1.0-rc.1`。不要依赖不指定版本的安装（它跟随
-> `latest`，当前也是 rc.1）。
+> `0.1.0` 是首个稳定版：`v0.1.0` tag 触发 CI 按 `latest` stage，维护者 approve
+> 后它就成为默认安装版本。批准前 `latest` 仍指向已公开的 `0.1.0-rc.3`；批准后
+> 安装精确版本 `@yankeguo/dsh-xcode-mcp@0.1.0`，不指定版本的安装也解析到
+> `0.1.0`。`0.1.0-rc.2` 的 staged 记录已被 reject，未公开。
 
 运行前提：**macOS + Xcode 26 或更新**（`xcrun mcpbridge` 可用，`xcode-select`
 指向该 Xcode），使用工具期间 Xcode 处于运行状态。本插件是纯 TS 实现：发现
