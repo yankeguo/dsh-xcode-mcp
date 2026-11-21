@@ -50,8 +50,7 @@
     "check:packages": "node scripts/check-packages.mjs",
     "verify": "pnpm run typecheck && pnpm run test && pnpm run build",
     "release:dry": "pnpm build && node scripts/stage-release.mjs --dry-run",
-    "release:stage": "pnpm build && node scripts/stage-release.mjs",
-    "release:promote": "node scripts/promote-release.mjs"
+    "release:stage": "pnpm build && node scripts/stage-release.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.5 <4.2.0",

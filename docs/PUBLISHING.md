@@ -3,33 +3,45 @@
 本仓库是**单包仓库**：根 `package.json` 就是唯一可发布包
 `@yankeguo/dsh-xcode-mcp`（一个纯 TS 的 DSH bundle 插件：发现会话工作目录所在的
 Xcode 项目后，直接以 `xcrun mcpbridge` 启动 MCP stdio server，无 Python/uv 依赖，
-包内不含任何 launcher 脚本）。没有 workspace 依赖，但发布工具链与参考仓库
-（dsh-devlead / dsh-infini-goal）保持一致：**pnpm 打包 → npm CLI staged publishing
-→ 人工 approve → GitHub Release**。
+包内不含任何 launcher 脚本）。没有 workspace 依赖，发布工具链：**pnpm 打包 → npm
+CLI staged publishing（CI）→ 维护者在 npmjs.com 网页批量 approve → approve 后手动
+创建 GitHub Release**。本仓库**不再使用** `scripts/promote-release.mjs`（及其
+`pnpm release:promote`），该脚本已删除。
 
-## 发布模型：CI 只 stage，人工 approve，再出 GitHub Release
+## 发布模型：CI 只 stage，维护者在 npmjs.com 网页 approve，再手动出 GitHub Release
 
 发布分为三个明确阶段：
 
 | 阶段 | 执行者 | 认证 | 动作 |
 | --- | --- | --- | --- |
 | **1. Stage（暂存）** | `.github/workflows/publish.yml`（推 tag 或手动 dispatch） | GitHub Actions OIDC 短时 token（`id-token: write`） | 构建、校验、`npm stage publish` 上传本包的暂存版本。**不发布任何东西。** |
-| **2. Approve（批准 = 发布）** | 仓库维护者本地 | `npm login` 登录凭据 + 交互式 2FA OTP | `scripts/promote-release.mjs` 审批 staged 版本；npm 批准后该版本立即公开 |
-| **3. Release（GitHub Release）** | 同一个本地脚本 | `gh auth login` | 批准后创建/更新 GitHub Release（幂等，`--verify-tag`） |
+| **2. Approve（批准 = 发布）** | 仓库维护者，在 **npmjs.com 网页**操作 | npmjs.com 账号登录 + 账号 2FA（浏览器会话内完成） | 在 npmjs.com 的 **staged packages / pending approvals** 页面批量勾选并 approve staged 版本；approve 的那一刻版本立即公开，**不可撤销** |
+| **3. Release（GitHub Release）** | 维护者，或 approve 后由维护者通知的 agent | `gh auth login`（有仓库权限） | `gh release create <tag> --repo yankeguo/dsh-xcode-mcp --title <tag> --notes-file docs/releases/v<version>.md --verify-tag`；只对**已存在**的 tag 建 Release，**绝不创建/移动 tag** |
 
 这样设计的原因：
 
-- **坏包永不外泄**：版本在 stage 完成并且人工批准之前不会公开。构建坏包、CI 中途
+- **坏包永不外泄**：版本在 stage 完成并且人工 approve 之前不会公开。构建坏包、CI 中途
   失败、版本错位都不会让用户装到坏版本。
 - **CI 没有发布权**：工作流不持有任何长期 npm token，只有短时 OIDC token；npm 只在
   `npm stage publish` / `npm publish` 时接受 OIDC token，`npm stage list/approve/reject`
-  **只能由人类登录执行**（approve/reject 还需要交互式 2FA）。即使工作流被篡改，最多
-  也只能 stage 一个未批准版本。
+  **只能由人类登录执行**。本仓库常规路径是在 npmjs.com 网页完成批准（网页同样要求
+  人类登录 + 2FA）；即使工作流被篡改，最多也只能 stage 一个未批准版本。
 - **可重跑、可审计**：stage 产物带 provenance；审批前的 staged id 打印在 CI job
-  summary 里；批准人（actor）能在 `npm stage list` 中看到。
+  summary 里；approve 的动作可在 npmjs.com 的 staged/published 记录与 registry 中
+  核对，approve 后立即能 `npm view` 到该版本。
+- **审批在网页、发布说明手动**：网页可一次勾选多个 staged 版本批量 approve，避免
+  本地 CLI 逐包输入 2FA/OTP 的摩擦；GitHub Release 只是对既有 tag 的“发布说明
+  载体”，由人在 approve 后决定何时创建。
 
 **tag 约定（硬性）**：CI 永不创建、移动或删除 tag；tag 由维护者本地创建并推送。
-promote 脚本用 `gh release create|edit --verify-tag`，只使用已存在的远端 tag。
+approve 后的 GitHub Release 用 `gh release create ... --verify-tag` 手动创建，只使用
+已存在的远端 tag。
+
+> **流程变更（2026-11-21）**：本仓库不再使用 `scripts/promote-release.mjs` /
+> `pnpm release:promote`（已删除）。审批改为在 npmjs.com 网页批量 approve，
+> GitHub Release 在 approve 后手动创建。历史 release notes
+> （`docs/releases/v0.1.0-rc.*.md`）与历史审计文档（`docs/AUDIT.md`）里出现的
+> `promote-release.mjs` 属**历史记录，不再代表当前流程**；当前流程以本文档为准。
 
 PR / push 到 main 由 [`verify.yml`](../.github/workflows/verify.yml) 跑安装、
 typecheck、test、build、`check:packages`；它不碰 registry，也不需要任何凭据。
@@ -37,23 +49,30 @@ typecheck、test、build、`check:packages`；它不碰 registry，也不需要�
 ## 前置条件
 
 - Node.js ≥ 24.9、pnpm `12.16.1`（`corepack enable` 或直接安装）。
-- **npm ≥ 11.15.0**：staged publishing（`npm stage` 系列命令与
-  `npm trust --allow-stage-publish`）从 11.15.0 开始提供；本仓库 CI 固定并校验
-  **11.20.0**（`npm install -g npm@11.20.0`）。本地发布/审批前请安装同一版本
-  （用 `npm stage --help` 自检）。
+- **npm ≥ 11.15.0（只在本仓库需要本地 CLI 时用到）**：网页 approve **不需要**本地
+  npm CLI；只有本地 stage fallback（`pnpm release:dry` / `release:stage`）、以及网页
+  不可用/没有 reject 入口时的例外手段 `npm stage reject` / `npm stage approve`
+  需要它。staged publishing
+  （`npm stage` 系列命令与 `npm trust --allow-stage-publish`）从 11.15.0 开始提供；
+  本仓库 CI 固定并校验 **11.20.0**（`npm install -g npm@11.20.0`），本地如需使用
+  请安装同一版本（用 `npm stage --help` 自检）。
 - npm 账号对 `@yankeguo` scope 有写权限；包已声明 `publishConfig.access: public`。
-- npm 账号已开启 **2FA**：approve / reject 必须交互式输入一次性密码（OTP）。
+- npm 账号已开启 **2FA**：在 npmjs.com 网页 approve 必须用开启 2FA 的维护者账号
+  登录（网页登录时完成 2FA，**不再逐包输入 OTP**）。本地例外手段
+  `npm stage approve/reject` 仍需要 `npm login` + 交互式 OTP。
 - 包必须**已存在于 npm registry**：npm 的 trusted publishing 只对已发布的包生效。
   若包尚未首发，首次发布是一次性手工操作（见下文“新包首次发布”）。本仓库已经
   完成首发：更早的 `0.0.0-stage` 探针版本与 `0.1.0-rc.1` 都已公开；`0.1.0-rc.3`
-  已由 `v0.1.0-rc.3` tag 触发 CI stage 并人工 approve 公开，registry 的 `latest`
-  与 `next` 都指向它。`0.1.0-rc.2` 由 `v0.1.0-rc.2` tag 触发 CI stage（`next`），
-  stage 成功但 staged 记录随后被 reject，因此未公开。`0.1.0` 是首个稳定版：由
-  `v0.1.0` tag 触发 CI 按 `latest` stage；只有 stage 成功且人工 approve 后才公开。
+  已由 `v0.1.0-rc.3` tag 触发 CI stage 并在 npmjs.com 网页 approve 公开，registry
+  的 `latest` 与 `next` 都指向它。`0.1.0-rc.2` 由 `v0.1.0-rc.2` tag 触发 CI
+  stage（`next`），stage 成功但 staged 记录随后被 reject，因此未公开。`0.1.0` 是
+  首个稳定版：由 `v0.1.0` tag 触发 CI 按 `latest` stage；只有 stage 成功且网页
+  approve 后才公开。
 - GitHub Actions 运行在 **GitHub-hosted runner**（npm 目前不支持 self-hosted
   runner 的 trusted publishing）。
 - 仓库公开（`yankeguo/dsh-xcode-mcp`）：provenance 需要公开仓库 + 公开包。
-- 本地 approve/建 Release 需要 `gh` ≥ 2.0 已认证（`gh auth status`）且有仓库权限。
+- 创建 GitHub Release 需要 `gh` ≥ 2.0 已认证（`gh auth status`）且有仓库权限——
+  由维护者本人执行，或 approve 后由维护者通知 agent 代执行。
 
 ## 一次性配置：npm 信任发布者（只允许 staged publishing）
 
@@ -154,7 +173,7 @@ pnpm check:packages        # 单包发布不变式
 pnpm release:dry           # 打包 + npm 预检（不上传；预发布版本自动按 next 预检）
 
 # 1) 写 release notes 并提交推送 main
-#    docs/releases/v0.1.0-rc.1.md（promote 的硬性前置条件）
+#    docs/releases/v0.1.0-rc.1.md（手动创建 GitHub Release 的正文）
 git add -A && git commit -m "release: v0.1.0-rc.1" && git push origin main
 
 # 2) 现构建并打包（lib/ 被 gitignore，必须现构建）
@@ -177,14 +196,16 @@ scripts/trusted-publishers.sh --dry-run
 scripts/trusted-publishers.sh
 scripts/trusted-publishers.sh --list
 
-# 5) 打 tag 并推送（tag 只能由人创建；CI 与 promote 都不会创建 tag）
+# 5) 打 tag 并推送（tag 只能由人创建；CI 与 Release 命令都不会创建 tag）
 git tag -a v0.1.0-rc.1 -m "v0.1.0-rc.1"
 git push origin v0.1.0-rc.1
 
-# 6) 用 promote 幂等地补建首个 GitHub Release：
-#    预检发现“0 条 staged 但版本已发布”→ 跳过 approve，只建 Release
-#    （--verify-tag；预发布版本自动标记 --prerelease，且不会成为 Latest）
-node scripts/promote-release.mjs --version 0.1.0-rc.1
+# 6) 首发版本公开后，手动补建首个 GitHub Release（本仓库不再用 promote 脚本）：
+#    首发版本已手工公开，这里只补 Release 正文，不涉及 npm。
+#    --verify-tag 保证只对已存在的 tag 建 Release；prerelease 标记 --prerelease
+#    且 --latest=false，不会成为 Latest。
+gh release create v0.1.0-rc.1 --repo yankeguo/dsh-xcode-mcp --title v0.1.0-rc.1 \
+  --notes-file docs/releases/v0.1.0-rc.1.md --verify-tag --prerelease --latest=false
 ```
 
 > **本仓库首发实况（2026-11-19）**：`v0.1.0-rc.1` tag 指向 commit `d96f65d`，
@@ -196,9 +217,9 @@ node scripts/promote-release.mjs --version 0.1.0-rc.1
 > Resolve/版本校验会通过，随后 stage 会因 `0.1.0-rc.1` 已发布而失败。**不要
 > 移动或重建 tag。**
 >
-> 第 6 步的 promote 只用于补建 GitHub Release：预检发现“0 条 staged、版本已
-> 发布”时会跳过 approve，仅创建 `--prerelease --latest=false` 的 Release。
-> 本仓库的 Release 当前**尚未创建**（本次审计未执行该步骤）。
+> 第 6 步的 GitHub Release 在本仓库当前**尚未创建**（本次审计未执行该步骤）；
+> 需要时按上面的 `gh release create ... --verify-tag` 手动补建即可（预发布用
+> `--prerelease --latest=false`），npm 侧状态不受影响。
 >
 > 这个红色点与“版本已发布”无关，是 tag commit 与 workflow 版本差；不要把它
 > 当成 stage 失败去重跑。后续新版本从包含 prerelease 支持的 main 打 tag，即可
@@ -231,11 +252,12 @@ pnpm install                # 同步 lockfile（纯版本号 bump 通常不改�
                             # 依赖规格变化时必须同步，CI 用 --frozen-lockfile 安装）
 ```
 
-### 3. 写 release notes（promote 的硬性前置条件）
+### 3. 写 release notes（手动 GitHub Release 的正文）
 
 新建 `docs/releases/v<VERSION>.md`（参考 [`v0.1.0-rc.1.md`](releases/v0.1.0-rc.1.md)）。
-`scripts/promote-release.mjs` 会用它作为 GitHub Release 正文，**文件不存在或为空时
-拒绝批准**（避免包已公开却没有发布说明）。
+它是 approve 后手动创建 GitHub Release 时的正文（`gh release create
+--notes-file docs/releases/v<VERSION>.md`）：**文件不存在或为空时不要创建
+Release**，先补齐 notes（避免 npm 已公开却没有发布说明）。
 
 ### 4. 发布前检查
 
@@ -291,13 +313,13 @@ git push origin v0.1.1                 # 触发 .github/workflows/publish.yml
 6. **Stage**：`node scripts/stage-release.mjs --version "$RELEASE_VERSION" --dist-tag "$RELEASE_DIST_TAG"`
    （稳定版 `latest`，prerelease `next`）。打印真实 stage id 并写入 job summary；
    失败时停止并打印修复提示。
-7. **Release summary**：仅在 stage 成功后写入下一步人工审批命令。
+7. **Release summary**：仅在 stage 成功后写入下一步提示——到 npmjs.com 网页批量 approve，approve 后手动创建 GitHub Release（含 `gh release create ... --verify-tag` 命令模板）。
 
 工作流权限（已声明）：
 
 ```yaml
 permissions:
-  contents: read      # GitHub Release 由本地 promote 脚本创建，CI 不需要写权限
+  contents: read      # GitHub Release 在 approve 后手动创建，CI 不需要写权限
   id-token: write     # OIDC：npm CLI 换取短时 token（仅能 stage）
 ```
 
@@ -311,81 +333,97 @@ permissions:
 移动 tag**。dispatch 与 tag push 共用并发组 `publish`（`cancel-in-progress: false`），
 不会交错 stage。
 
-### 6. 人工批准（本地，2FA）
+### 6. 网页 approve（npmjs.com，维护者）
 
-维护者在本机执行：
+CI stage 成功后，版本只是 registry 里的一条 **staged** 记录：**什么都不会公开**。
+批准在浏览器里完成，不需要本地 npm CLI，也不需要逐包输入 OTP：
 
-```sh
-npm login                                  # 确认是 @yankeguo 维护者，账号已开 2FA
-npm install -g npm@11.20.0                 # 若尚未安装（仓库固定 11.20.0）
+1. 用维护者账号登录 <https://www.npmjs.com>（账号已开 2FA，登录时完成 2FA）。
+2. 打开包页面：**Packages → `@yankeguo/dsh-xcode-mcp` → Staged packages**
+   （即 pending approvals / 待批准页面）。列表里能看到本包所有 staged 版本，以及
+   每个记录在 stage 时写入的 **dist-tag**。
+3. 对照 CI 的 job summary 核对要发布的版本与 dist-tag：
+   - **稳定版**：dist-tag 必须是 `latest`；
+   - **prerelease**：dist-tag 必须是 `next`，**绝不能是 `latest`**（approve 会按
+     stage 时记录的 dist-tag 公开；prerelease 一旦挂 `latest`，`npm install <pkg>`
+     就会默认解析到预发布版本）。
+4. 勾选目标版本，点 **Approve**。页面支持多选，可以一次批量 approve 多个 staged
+   版本（本仓库单包，通常一次一个版本）。
 
-node scripts/promote-release.mjs --dry-run # 预检 + 打印计划，不做任何变更
-node scripts/promote-release.mjs           # approve（npm 会提示输入 OTP），然后建 GitHub Release
-```
+> **stage 之后什么都不会公开；approve 即公开且不可撤销。** approve 一完成，包页面
+> 立刻能看到该版本，registry 也可 `npm view` 到。错发没有“撤回 approve”的按钮，
+> 只有 72 小时内 `npm unpublish`（见“误发版本”）或后续 `npm deprecate`。
 
-`promote-release.mjs` 的两阶段行为：
-
-**阶段 A：只读预检**（任一失败都不会批准）
-
-- 验证 `package.json` 版本与 `--version` 一致、npm 已登录、npm 支持 `npm stage`；
-- 若版本是 prerelease 且传了 `--tag latest`，在**任何 registry 读取/npm 登录检查
-  之前**直接失败（`--dry-run` 同样生效）：approve 会按 stage 时记录的 dist-tag
-  公开，prerelease 一旦挂 latest 就成了默认安装；
-- 执行 `npm stage list @yankeguo/dsh-xcode-mcp --json`，过滤出
-  `packageName` 与 `version` 都匹配的记录：
-  - **恰好 1 条**：批准它；
-  - **0 条但该版本已发布**：视为已完成（重跑/断点续传/手工首发幂等），跳过；
-  - **0 条且未发布**：先对 `npm view` 做有限次重试（最多 4 次、间隔约 1.5s）再判定
-    —— 刚 approve 的版本可能还没出现在读路径里，避免把“已发布但尚未传播”误判为
-    缺失；仍不存在才失败，提示先跑发布工作流；
-  - **多于 1 条**：失败并列出全部 staged id（必须人工决定 reject 哪一条）；
-- 若版本是 prerelease 且匹配到的 staged 记录 `tag` 为 `latest`（记录没有 `tag`
-  时按 npm 默认的 `latest` 处理），在 approve 之前**直接失败**，并打印
-  `npm stage reject <stage-id>` 与
-  `node scripts/stage-release.mjs --version <version> --dist-tag next` 的修复命令；
-- 预检还会校验 staged 记录的 `tag` 与 `--tag` 一致（记录带 `tag` 时）：不一致则
-  在 approve 之前失败，并打印 `npm stage reject <stage-id>` 与
-  `node scripts/stage-release.mjs --version <version> --dist-tag <distTag>` 的修复
-  命令；记录不带 `tag` 时对稳定版放行（npm 默认 `latest` 可能省略该字段），对
-  prerelease 仍按 `latest` 拒绝（见上一条）；
-- 验证 `gh` 已认证、有仓库权限、`gh release view` 可查（结果缓存给阶段 B 使用）；
-- 验证 release tag **已在远端存在**（`gh api repos/<repo>/git/ref/tags/<tag>`，
-  本脚本不会创建 tag），验证 release notes 文件存在且非空；
-- 打印 approve 计划与 GitHub Release 动作。
-
-**阶段 B：批准 + Release**
-
-- 执行 `npm stage approve <stage-id>`，stdio 继承，npm 自己提示并读取 OTP；
-- 批准后**立即公开**；中途失败会停止并打印：是否已公开、仍处于 staged 的 id、
-  `npm stage reject <id>` 清理提示、以及重跑命令；
-- 如果版本是 prerelease 且本次**确实 approve 了至少一个包**，在创建 GitHub Release
-  之前执行 `npm view @yankeguo/dsh-xcode-mcp dist-tags --json`，断言
-  `dist-tags.latest !== <version>`；若 latest 指向该 rc，立即失败并提示包已公开，
-  给出 `npm dist-tag add @yankeguo/dsh-xcode-mcp@<stable-version> latest` 修复命令。
-  0 条 staged、版本已发布的幂等重跑（没有 approve 任何包）会跳过该检查；
-- 批准后按阶段 A 缓存的 release 存在性执行 `gh release create|edit <tag>
-  --repo <repo> --title <tag> --notes-file docs/releases/v<version>.md --verify-tag`
-  （幂等；`--verify-tag` 保证只使用已存在的 tag）。
-
-脚本参数：
-
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `--version <x.y.z>` | 根 `package.json` 版本 | 要批准的发布版本 |
-| `--release-tag <tag>` | `v<version>` | GitHub Release tag；必须已存在，脚本绝不创建/移动 tag |
-| `--tag <dist-tag>` | prerelease 为 `next`，稳定版为 `latest` | 期望的 npm dist-tag；staged 记录的 tag 必须一致（记录带 tag 时）；prerelease + `latest` 在任何 registry 读取前直接失败 |
-| `--repo <owner/repo>` | 从 origin remote 推导；无 GitHub origin 时回退 `yankeguo/dsh-xcode-mcp` | GitHub 仓库 |
-| `--notes-file <path>` | `docs/releases/v<version>.md` | Release 正文文件（相对路径从仓库根解析） |
-| `--dry-run` | 关闭 | 完整只读预检 + 打印计划，不批准、不创建 Release；prerelease×latest 在联网前失败 |
-| `--list-only` | 关闭 | 只打印 staged 状态（临时排障/清理用），不检查 gh/notes、不变更 |
-
-### 7. 发布后校验
+approve 后立即核对 npm dist-tags（任何机器上都能执行，只需要读权限）：
 
 ```sh
-npm view @yankeguo/dsh-xcode-mcp@0.1.1 version dist-tags
-gh release view v0.1.1 --repo yankeguo/dsh-xcode-mcp
+npm view @yankeguo/dsh-xcode-mcp dist-tags --json
 ```
 
+- 刚批准的是**稳定版**：`latest` 必须指向这个新稳定版；
+- 刚批准的是 **prerelease**：`latest` 必须仍然指向当前稳定版，刚批准的 rc 只应
+  出现在 `next`。
+
+若 `latest` 不符合预期，按“版本与 dist-tag 策略”里的规则用
+`npm dist-tag add @yankeguo/dsh-xcode-mcp@<稳定版> latest` 纠正后，再进入下一步。
+
+#### staged 记录的 reject（例外手段）
+
+npmjs.com 的 staged 页面是否提供 reject 入口取决于当前网页版本。若网页**没有**
+reject 按钮，用本地 npm CLI 作为**例外手段**（需要 npm ≥ 11.15.0 与 `npm login`）：
+
+```sh
+npm stage list @yankeguo/dsh-xcode-mcp --json   # 找到本次运行的 staged id
+npm stage view <stage-id> --json                # 核对 version/commit/createdAt
+npm stage reject <stage-id>                     # 不可恢复：删除该 staged tarball
+```
+
+reject 只影响 **staged** 记录，不会影响任何已公开版本；**已 approve 的版本无法通过
+reject 撤回**。
+
+### 7. GitHub Release（approve 后手动创建）
+
+**触发方式**：approve 完成后，由维护者通知 agent（或维护者自己）执行
+`gh release create`；npm 与 CI 都**不会**自动创建 GitHub Release。tag 已经存在，
+本步骤不移动、不重建、不删除 tag。
+
+```sh
+# 稳定版（在仓库根目录执行，tag 与 release notes 均已就绪）
+gh release create v0.1.0 --repo yankeguo/dsh-xcode-mcp --title v0.1.0 \
+  --notes-file docs/releases/v0.1.0.md --verify-tag --latest
+
+# 预发布版（若适用）
+gh release create v0.2.0-rc.1 --repo yankeguo/dsh-xcode-mcp --title v0.2.0-rc.1 \
+  --notes-file docs/releases/v0.2.0-rc.1.md --verify-tag --prerelease --latest=false
+```
+
+- `--verify-tag`：**只对已存在的 tag** 创建 Release；tag 不存在时命令直接失败，
+  绝不会顺手创建一个 tag 或把 tag 移到别的 commit。
+- `--notes-file`：Release 正文来自 `docs/releases/v<version>.md`，必须先写好。
+- 稳定版用 `--latest` 标记为 Latest；prerelease 用 `--prerelease --latest=false`，
+  不会成为 Latest，也不会抢走稳定版的 Latest 标记。
+- 同一 tag 已有 Release 时 `gh release create` 会失败；要更新正文/标记，改用
+  `gh release edit <tag> --verify-tag --notes-file docs/releases/v<version>.md`
+  （稳定版可加 `--latest`，prerelease 用 `--prerelease --latest=false`），仍然
+  不会移动 tag。
+- 创建后必须核对「npm dist-tags ↔ git tag ↔ GitHub Release」三者一致（见下一步）。
+
+### 8. 发布后校验
+
+```sh
+# npm：版本已公开，dist-tag 正确
+npm view @yankeguo/dsh-xcode-mcp@<version> version dist-tags
+
+# git：tag 指向预期的 commit（不要移动/重建）
+git rev-parse "v<version>^{commit}"
+git ls-remote --tags origin "refs/tags/v<version>"
+
+# GitHub Release：存在、指向同一 tag，正文与标记正确
+gh release view "v<version>" --repo yankeguo/dsh-xcode-mcp
+```
+
+三者必须一致：**同一个 semver、同一个 commit**——npm 上的版本由 CI 从该 tag 的
+commit 构建并 stage；`gh release create --verify-tag` 只引用同一个既有 tag。
 npmjs.com 上应显示 **provenance / attestation**（公开仓库 + GitHub-hosted runner
 自动生成）。
 
@@ -400,16 +438,18 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
 
 ## 版本与 dist-tag 策略
 
-- 稳定版：默认 `latest`。CI 按版本推导并以 `--dist-tag latest` stage；promote 批准后
-  即成为 `latest` 对应的已发布版本。
+- 稳定版：默认 `latest`。CI 按版本推导并以 `--dist-tag latest` stage；网页 approve
+  后即成为 `latest` 对应的已发布版本。
 - 试验版/预发布：**打 prerelease tag 并推送即可**——CI 自动以 `next` dist-tag stage
-  （稳定版才用 `latest`），其余流程与稳定版完全一致（人工 approve + GitHub Release
-  自动标 prerelease）：
+  （稳定版才用 `latest`），其余流程与稳定版完全一致（npmjs.com 网页 approve +
+  approve 后手动创建 GitHub Release 并标记 prerelease）：
   ```sh
   git tag -a v0.2.0-rc.1 -m "v0.2.0-rc.1"
-  git push origin v0.2.0-rc.1                 # CI 以 next stage 本包
-  npm login
-  node scripts/promote-release.mjs --version 0.2.0-rc.1   # approve（2FA）+ prerelease Release
+  git push origin v0.2.0-rc.1     # CI 以 next stage 本包
+  # 1) 在 npmjs.com 的 staged packages 页面 approve（确认 dist-tag 是 next）
+  # 2) approve 完成后手动建 prerelease 的 GitHub Release：
+  gh release create v0.2.0-rc.1 --repo yankeguo/dsh-xcode-mcp --title v0.2.0-rc.1 \
+    --notes-file docs/releases/v0.2.0-rc.1.md --verify-tag --prerelease --latest=false
   ```
   本地 stage 仍可作为 fallback（`node scripts/stage-release.mjs --version 0.2.0-rc.1
   --dist-tag next`，无 provenance），例如 CI 不可用或需要紧急重试时。CI 按版本推导
@@ -418,12 +458,15 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
   1. `stage-release.mjs` 对 prerelease 版本**默认 `next`**（`--dist-tag` 可省略），并
      **拒绝显式 `--dist-tag latest`**——approve 会按 stage 时记录的 dist-tag 公开，
      prerelease 一旦挂 latest 就成了默认安装；
-  2. `promote-release.mjs` 预检**拒绝 approve 任何以 latest stage 的 prerelease
-     记录**（`--tag latest` 搭配 prerelease 甚至会在任何 registry 读取之前直接
-     失败），并在 approve 后核对 `dist-tags.latest` 不指向该 prerelease；
-  3. GitHub Release 自动按版本标记：prerelease → `--prerelease --latest=false`，稳定版
-     → `--prerelease=false`（edit 时纠正旧标记），都带 `--verify-tag`；promote 不修改
-     stage 时记录的 dist-tag。
+  2. **网页 approve 前核对 staged 页面的 dist-tag**：prerelease 记录必须显示 `next`；
+     发现以 `latest` stage 时**不要 approve**，先 reject（网页无入口时用例外手段
+     `npm stage reject <stage-id>`）再重新 stage。approve 完成后再用
+     `npm view @yankeguo/dsh-xcode-mcp dist-tags --json` 核对 `latest` 不指向该
+     prerelease；若已被抢走，用
+     `npm dist-tag add @yankeguo/dsh-xcode-mcp@<上一个稳定版> latest` 纠正；
+  3. GitHub Release 按版本**手动**标记：prerelease → `--prerelease --latest=false`，
+     稳定版 → `--latest`，都带 `--verify-tag`；该命令不改动 stage 时记录的
+     dist-tag，也不移动 tag。
   手工 `npm publish` tarball（仅首发）时没有这层保护，必须自己显式传 `--tag next`。
   prerelease 的 tag（`v0.2.0-rc.1`）推送到远端即触发 CI stage，也供 Release 的
   `--verify-tag` 使用。DSH 插件市场按版本安装，不受 dist-tag 影响；从 npm 安装时
@@ -436,12 +479,13 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
   的 `version` 已 bump、lockfile 已同步。
 
 > **当前 registry 实况（2026-11-21）**：`0.1.0-rc.3` 已由 `v0.1.0-rc.3` tag
-> 触发 CI stage 并人工 approve 公开，`latest` 与 `next` 都指向它；更早还有
-> `0.0.0-stage` 与 `0.1.0-rc.1`，而 `0.1.0-rc.2` 的 staged 记录已被 reject，
-> npm 上不存在该版本。`0.1.0` 是首个稳定版：`v0.1.0` tag 触发 CI 按 `latest`
-> stage；promote 预检会核对 staged 记录的 dist-tag，approve 后 `latest` 应指向
-> `0.1.0`。若 approve 后 npm 仍把 `latest` 留在 rc，维护者执行
-> `npm dist-tag add @yankeguo/dsh-xcode-mcp@0.1.0 latest` 纠正后再建 Release。
+> 触发 CI stage 并在 npmjs.com 网页 approve 公开，`latest` 与 `next` 都指向它；
+> 更早还有 `0.0.0-stage` 与 `0.1.0-rc.1`，而 `0.1.0-rc.2` 的 staged 记录已被
+> reject，npm 上不存在该版本。`0.1.0` 是首个稳定版：`v0.1.0` tag 触发 CI 按
+> `latest` stage；维护者需在 staged 页面核对 dist-tag 后网页 approve，approve 后
+> `latest` 应指向 `0.1.0`。若 approve 后 npm 仍把 `latest` 留在 rc，维护者执行
+> `npm dist-tag add @yankeguo/dsh-xcode-mcp@0.1.0 latest` 纠正，再手动创建
+> GitHub Release。
 
 ## 脚本参考
 
@@ -464,24 +508,15 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.1
 （**不打印假的 stage id**；只有 npm 真实返回的 stage id 才会被记录）。临时 tarball
 目录在结束时删除，不污染仓库。
 
-### `scripts/promote-release.mjs`（维护者本地 approve + Release）
+### `scripts/promote-release.mjs`（已删除，历史记录）
 
-参数见上文“人工批准”一节。要点：
+本仓库**不再提供** `scripts/promote-release.mjs`，`package.json` 里也没有
+`release:promote` script。审批已改为 npmjs.com 网页批量 approve，GitHub Release
+在 approve 后手动用 `gh release create ... --verify-tag` 创建。
 
-- 预检要求**恰好一条**匹配 staged 记录；已发布视为幂等完成（`npm view` 未命中时会
-  做有限次 registry 传播重试）；重试后仍缺失才失败；
-- 预检校验 staged 记录的 `tag` 与 `--tag` 一致（记录带 tag 时），并拒绝 prerelease
-  以 `latest` stage 的记录（`--tag latest` 搭配 prerelease 会在任何 registry 读取
-  前直接失败）；approve 后对 prerelease 执行 `npm view <pkg> dist-tags --json`，
-  断言 `latest` 不指向该版本；
-- approve 由 npm 交互式读取 OTP；失败时给出已公开状态、剩余 staged id、
-  `npm stage reject` 与重跑指引；
-- GitHub Release 幂等创建/更新，`--verify-tag` 保证不新建 tag；本地 HEAD 与 tag
-  不一致时只警告（promote 读取 registry 与 notes 文件，不依赖本地构建产物）；
-- prerelease 版本（`-rc.N` 等）的 GitHub Release 自动标记 `--prerelease`
-  （create 时同时 `--latest=false`）；稳定版 edit 时显式 `--prerelease=false`，
-  幂等重跑不会残留错误的 prerelease 标记。npm dist-tag 本身在 stage/publish
-  时已记录，promote 不改 dist-tag。
+历史 release notes（`docs/releases/v0.1.0-rc.*.md`）与历史审计文档
+（`docs/AUDIT.md`）中仍会出现 `promote-release.mjs` / `release:promote` 的用法，
+它们记录的是当时的流程，**属历史记录，不再代表当前流程**，不要照做。
 
 ### `scripts/trusted-publishers.sh`（一次性 trust 配置）
 
@@ -507,10 +542,12 @@ PASS/FAIL 清单，任一失败以非零码退出。
 | `pnpm check:packages` | `node scripts/check-packages.mjs` | 单包发布不变式 |
 | `pnpm release:dry` | `pnpm build && node scripts/stage-release.mjs --dry-run` | 本地打包 + npm 预检（不上传） |
 | `pnpm release:stage` | `pnpm build && node scripts/stage-release.mjs` | 本地 stage（需 `npm login`；CI 不需要它） |
-| `pnpm release:promote` | `node scripts/promote-release.mjs` | 人工批准 + GitHub Release |
 
-`pnpm verify` 保持 typecheck + test + build；`check:packages` 独立成脚本，
-`verify.yml` 与 `publish.yml` 都会在 build 后运行它。不存在任何直发脚本
+不存在本地 approve／Release 脚本：**`release:promote` 与
+`scripts/promote-release.mjs` 已删除**（`check:packages` 断言它们不存在），审批在
+npmjs.com 网页完成，GitHub Release 在 approve 后手动用 `gh release create
+--verify-tag` 创建。`pnpm verify` 保持 typecheck + test + build；`check:packages`
+独立成脚本，`verify.yml` 与 `publish.yml` 都会在 build 后运行它。不存在任何直发脚本
 （`release:publish` 被 check-packages 明确禁止）。
 
 ## 故障恢复
@@ -530,30 +567,32 @@ PASS/FAIL 清单，任一失败以非零码退出。
    然后 Actions → `publish` → Run workflow → `release_tag` 填**同一个既有 tag**。
    CI 会重新 stage，provenance 也重新生成。前提是该版本**尚未发布**；已经发布的
    版本（例如 `0.1.0-rc.1`）不能通过 dispatch 重新 stage，只能升版本或补 Release。
-4. 如果上一次运行其实**已经 stage 成功**，不要重跑 stage：直接用
-   `node scripts/promote-release.mjs` 完成发布。
+4. 如果上一次运行其实**已经 stage 成功**，不要重跑 stage：直接到 npmjs.com 的
+   staged packages 页面 approve 该版本。
 
 > 为什么不能“只补 stage 一次”？重复 stage 同一版本的结果没有保证（可能被 registry
 > 拒绝，也可能留下多条同版本 staged 记录）。因此“先 reject 本次残留记录、再用同一
 > 既有 tag 全量重跑”是最干净、可预测的恢复路径。
 
-### promote 中途失败
+### approve / GitHub Release 失败
 
-- 已 approve 的版本**已经公开**，无法撤销（见“误发版本”）。`promote-release.mjs`
-  重跑是幂等的：已发布版本会被跳过（`npm view` 暂时查不到时会有限次等待 registry
-  传播）—— 修复原因后直接重跑同一条命令即可。
-- 如果失败发生在最后的 GitHub Release 步骤：包已公开，只需修好 `gh` 认证/网络后
-  重跑 promote（会走 `gh release edit/create --verify-tag`），不会重复发布。
-- 预检报 “prerelease ... was staged with the latest dist-tag”：先按提示
-  `npm stage reject <stage-id>`，再 `node scripts/stage-release.mjs --version
-  <version> --dist-tag next` 重新 stage（或对**尚未发布**的版本通过
-  workflow_dispatch 指定同一个既有 release_tag 重跑 CI；CI 按版本自动用 next
-  重新 stage）；
-  **不要**在这种记录上 approve。
-- approve 之后报 “the latest dist-tag points at prerelease ...”：包**已经公开**；
-  立即 `npm dist-tag add @yankeguo/dsh-xcode-mcp@<stable-version> latest` 把 latest
-  指回稳定版，再重跑 `node scripts/promote-release.mjs --version <version>` 完成
-  GitHub Release（幂等重跑会跳过 approve 与 latest 检查）。
+- 已 approve 的版本**已经公开**，无法撤销（见“误发版本”）。approve 是在网页上完成的
+  一次性动作，没有本地脚本可重跑；需要重试的通常只有后面的 GitHub Release 创建。
+- 如果 GitHub Release 创建失败：包已公开，只需修好 `gh auth`/网络后重跑同一条
+  `gh release create ... --verify-tag` 命令；若 Release 已存在但正文/标记不对，用
+  `gh release edit <tag> --verify-tag --notes-file docs/releases/v<version>.md`
+  （prerelease 加 `--prerelease --latest=false`）修正，不会移动 tag。
+- 网页 approve 前发现 prerelease 记录的 dist-tag 是 `latest`：**不要 approve**。
+  先 reject 该 staged 记录（网页无入口时用例外手段 `npm stage reject <stage-id>`），
+  再 `node scripts/stage-release.mjs --version <version> --dist-tag next` 重新 stage
+  （或对**尚未发布**的版本通过 workflow_dispatch 指定同一个既有 release_tag 重跑
+  CI；CI 按版本自动用 next）。
+- approve 后核对发现 `dist-tags.latest` 指向了 prerelease：包**已经公开**；立即
+  `npm dist-tag add @yankeguo/dsh-xcode-mcp@<稳定版> latest` 把 latest 指回稳定版，
+  然后照常手动创建 GitHub Release（dist-tag 与 Release 是两件独立的事）。
+- 网页操作失败/不可用：版本仍是 staged、**没有公开**；先重试网页。若网页持续不可用，
+  可用本地例外手段 `npm stage approve <stage-id>`（需要 npm ≥ 11.15.0、`npm login`
+  与 2FA OTP）完成批准，然后照常手动建 Release。
 
 ### 其它典型情况
 
@@ -561,10 +600,10 @@ PASS/FAIL 清单，任一失败以非零码退出。
 | --- | --- |
 | 出现**多条** matched staged 记录 | 先 `npm stage view <id> --json` 看 createdAt/shasum，再 `npm stage reject <id>` 清掉多余记录；每次运行只保留一条 |
 | staged 了**错误 commit** 的版本 | reject 该版本的全部 staged id，确认 tag/commit 后再 dispatch 同一 tag（不会移动 tag） |
-| CI 重跑报“版本已 staged / 已发布”或出现重复 staged 记录 | 先 `npm stage list @yankeguo/dsh-xcode-mcp --json` 核对：已 stage → 直接 promote；有残留 → reject 后从同一既有 tag 全量重跑 |
+| CI 重跑报“版本已 staged / 已发布”或出现重复 staged 记录 | 先 `npm stage list @yankeguo/dsh-xcode-mcp --json` 核对：已 stage → 直接到 npmjs.com 网页 approve；有残留 → reject 后从同一既有 tag 全量重跑 |
 | 版本已经发布 | 不能再次 stage/publish 同版本；升版本重新发版（72 小时内可 `npm unpublish`，见下） |
 | 想用 workflow_dispatch 重跑 | `release_tag` 必须是已存在且**尚未发布**的 tag；工作流校验 tag commit == HEAD。已发布版本不能重新 stage。**不要删除/重建/移动 tag** |
-| tag 不存在 | `git push origin <tag>` 推送既有 tag；本工作流与 promote 脚本都不会创建 tag |
+| tag 不存在 | `git push origin <tag>` 推送既有 tag；CI 工作流与 `gh release create --verify-tag` 都不会创建 tag |
 | 误发版本 | npm 允许 72 小时内 `npm unpublish @yankeguo/dsh-xcode-mcp@<version>`；超过则只能 `npm deprecate` 并升版本 |
 
 ### 首次 CI 运行的验证清单
@@ -577,8 +616,8 @@ PASS/FAIL 清单，任一失败以非零码退出。
 - [ ] `scripts/trusted-publishers.sh --list` 显示本包已配置 `publish.yml` /
       `yankeguo/dsh-xcode-mcp`，且授权动作为 staged publishing（没有旧的
       `--allow-publish` 配置残留）
-- [ ] 本地 `npm --version` ≥ 11.15.0（建议与 CI 一致的 11.20.0）；CI 日志出现
-      “npm 11.20.0 supports staged publishing”
+- [ ] CI 日志出现 “npm 11.20.0 supports staged publishing”；本地 npm 仅在使用例外
+      手段（`npm stage reject/approve`）或本地 stage fallback 时才需要 ≥ 11.15.0
 - [ ] tag 已 push，且 CI 的 “Resolve and verify the release tag” 通过
       （tag commit == HEAD）
 - [ ] “Verify the release tag matches the package version” 通过（tag 与根版本一致）
@@ -586,10 +625,15 @@ PASS/FAIL 清单，任一失败以非零码退出。
       job summary 有 staged 表
 - [ ] 此时 `npm view @yankeguo/dsh-xcode-mcp@<version>` **仍应 404**（还没有公开），
       `npm stage list @yankeguo/dsh-xcode-mcp --json` 恰好一条记录
-- [ ] 本地 `node scripts/promote-release.mjs --dry-run` 计划正确
-      （1 个 approve + 1 个 Release）
-- [ ] approve 后 `npm view @yankeguo/dsh-xcode-mcp@<version> version dist-tags`
-      正常，npmjs.com 显示 provenance
+- [ ] npmjs.com 的 **staged packages / pending approvals** 页面能看到该版本，且
+      dist-tag 与版本形态一致（稳定版 `latest`、prerelease `next`）
+- [ ] 在网页 approve（可批量勾选）后，`npm view @yankeguo/dsh-xcode-mcp@<version>
+      version dist-tags` 正常，npmjs.com 显示 provenance，
+      `npm view @yankeguo/dsh-xcode-mcp dist-tags --json` 的 `latest` 正确
+- [ ] approve 后由维护者/agent 执行
+      `gh release create v<version> --repo yankeguo/dsh-xcode-mcp --title v<version>
+      --notes-file docs/releases/v<version>.md --verify-tag`（prerelease 加
+      `--prerelease --latest=false`）
 - [ ] `gh release view v<version> --repo yankeguo/dsh-xcode-mcp` 指向同一 tag 与 commit
 - [ ] 仓库 secrets 中没有 `NPM_TOKEN`（本模型不需要任何 npm secret）
 
@@ -603,14 +647,16 @@ PASS/FAIL 清单，任一失败以非零码退出。
    **一次性的 stage token**；也可通过 `NPM_ID_TOKEN` 传入。
 3. npm 侧校验 OIDC claims（仓库、工作流文件名、可选 environment）与包的 trusted
    publisher 配置一致，并且配置允许 staged publishing，然后接受 stage 请求。
-4. token 短时且绑定具体工作流；CI 不能 list/approve/reject（这些需要人类登录，
-   approve/reject 还需要交互式 2FA）。
+4. token 短时且绑定具体工作流；CI 不能 list/approve/reject。本仓库的常规 approve
+   由维护者在 npmjs.com 网页完成（登录 + 2FA）；本地 CLI 的 approve/reject 只作为
+   网页不可用/网页无 reject 入口时的例外手段（仍需 `npm login` + 交互式 2FA）。
 5. provenance 由 npm CLI 在 OIDC token 交换成功后生成（Sigstore）：需要公开仓库 +
    公开包；CI 中 `stage-release.mjs` 显式传 `--provenance`，npm 也会对公开包自动
    启用。本地 stage（`npm login` 凭据）不产生 provenance；如不需要可加
    `--no-provenance`。
-6. stage 记录与 provenance 均可在 npmjs.com / registry 审计；GitHub Release 的
-   tag 固定指向 CI 构建的 commit。
+6. stage 记录与 provenance 均可在 npmjs.com / registry 审计；GitHub Release 用
+   `gh release create ... --verify-tag` 手动创建，tag 固定指向 CI 构建的 commit，
+   创建 Release 不会移动 tag。
 
 > pnpm 版本要求：本仓库 CI 固定 `pnpm@12.16.1`，但 staged publishing / OIDC /
 > provenance 全部由 **npm CLI** 完成；CI 因此显式安装并固定 `npm@11.20.0`。
@@ -623,15 +669,16 @@ PASS/FAIL 清单，任一失败以非零码退出。
 | CI 报 `ENEEDAUTH`（stage 阶段） | 工作流缺少 `id-token: write`，或本包还没有匹配的 trusted publisher（先手动首次发布再配置） |
 | CI 报 `npm stage` 不存在 | runner 上的 npm < 11.15.0（工作流已显式安装并校验 11.20.0）；若仍失败检查 npm 安装步骤日志 |
 | `npm stage list` 报 401/ENEEDAUTH | 本地未 `npm login`，或登录凭据不可用于该操作；list 需要人类登录，approve/reject 还需要交互式 2FA；OIDC token 无效 |
-| approve 报 `EOTP` / OTP 错误 | OTP 输错或过期；重跑 `node scripts/promote-release.mjs` 重新输入。也可手工 `npm stage approve <id>` 后重跑 promote（会跳过已批准项） |
-| promote 报 “no staged version and no published version” | CI 未运行或 stage 失败；先跑发布工作流（tag push 或 dispatch 既有 tag），看到 stage id 后再 promote |
-| promote 报 “has N staged records” | 同一版本存在多条 staged 记录：`npm stage view <id> --json` 比较，`npm stage reject` 清掉旧记录后重试 |
-| promote 报 “prerelease ... was staged with the latest dist-tag” / `--tag latest` 搭配 rc 直接失败 | 该 rc 的 staged 记录以 latest 暂存。按提示 `npm stage reject <stage-id>`，再 `node scripts/stage-release.mjs --version <version> --dist-tag next` 重新 stage；或对**尚未发布**的版本通过 workflow_dispatch 指定同一个既有 release_tag 重跑 CI（CI 按版本自动用 next）。不要在 latest 记录上 approve |
-| approve 后发现 `dist-tags.latest` 指向 rc | 包已公开；立即 `npm dist-tag add @yankeguo/dsh-xcode-mcp@<stable-version> latest` 把 latest 指回稳定版，再重跑 `node scripts/promote-release.mjs --version <version>` 完成 GitHub Release |
+| 网页 approve 报 2FA/登录失败 | 重新登录 npmjs.com 并完成账号 2FA；网页 approve **不逐包输入 OTP**。若用本地例外手段 `npm stage approve`，需要 npm ≥ 11.15.0、`npm login` 与交互式 OTP |
+| staged packages 页面看不到本版本 | CI 未运行或 stage 失败；先跑发布工作流（tag push 或 dispatch 既有 tag），stage 成功后页面才会出现该版本。没有 staged 记录时不要试图手工发布 |
+| 同一版本出现多条 staged 记录 | `npm stage view <id> --json` 比较 createdAt/shasum，保留一条、`npm stage reject` 其余；每次运行只应有一条 |
+| staged 页面显示 rc 的 dist-tag 是 `latest` | **不要 approve**：approve 会按该 dist-tag 公开，rc 就成了默认安装。先 reject 该 staged 记录（网页无入口时用 `npm stage reject <stage-id>`），再 `node scripts/stage-release.mjs --version <version> --dist-tag next` 重新 stage；或对**尚未发布**的版本通过 workflow_dispatch 指定同一个既有 release_tag 重跑 CI |
+| approve 后发现 `dist-tags.latest` 指向 rc | 包已公开；立即 `npm dist-tag add @yankeguo/dsh-xcode-mcp@<stable-version> latest` 把 latest 指回稳定版，然后继续手动创建 GitHub Release |
 | `Cannot publish over the previously published versions` | 该版本已发布，不能覆盖；升版本后再发。**首个版本**手工发布后不能再 stage；本仓库的 `v0.1.0-rc.1` tag run 实际在更早的 tag 校验步骤就失败（见“新包首次发布”实况）。不要移动 tag |
-| promote 报 `release tag ... does not exist` | 先把既有 tag push 到 origin；promote 与 CI 都不会创建/移动 tag |
-| promote 报 notes 文件不存在/为空 | 先写 `docs/releases/v<version>.md`，或用 `--notes-file` 指定 |
-| GitHub Release 创建失败 | 包已公开；修好 `gh auth`/网络后重跑 promote，或手工 `gh release create <tag> --verify-tag --title <tag> --notes-file <file>` |
+| `gh release create --verify-tag` 报 `release not found` / tag 不存在 | 先把既有 tag push 到 origin；CI 与 `gh release create --verify-tag` 都不会创建/移动 tag |
+| 创建 Release 时 notes 文件不存在/为空 | 先写 `docs/releases/v<version>.md`，再用 `--notes-file` 指定；正文缺失时不要创建 Release |
+| GitHub Release 创建失败 | 包已公开；修好 `gh auth`/网络后重跑 `gh release create <tag> --verify-tag --title <tag> --notes-file <file>`（已存在则用 `gh release edit`，不会移动 tag） |
+| 想撤回已 approve 的版本 | approve 不可撤销；npm 允许 72 小时内 `npm unpublish`，之后只能 `npm deprecate` 并升版本 |
 | provenance 未生成 | 仓库非公开、runner 非 GitHub-hosted、或本地 stage（本地不生成）；公开仓库 + hosted runner 会在 CI 中生成 |
 | 想改用新工作流文件名/环境 | 先 `npm trust list` + `npm trust revoke --id`，再用 `scripts/trusted-publishers.sh` 重建 |
 | 误发版本 | npm 允许 72 小时内 `npm unpublish`；超过则只能废弃（deprecate）并升版本 |
@@ -645,8 +692,8 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp
 # 或在 Web：Plugins → Add plugin → 输入 @yankeguo/dsh-xcode-mcp
 ```
 
-> `0.1.0` 是首个稳定版：`v0.1.0` tag 触发 CI 按 `latest` stage，维护者 approve
-> 后它就成为默认安装版本。批准前 `latest` 仍指向已公开的 `0.1.0-rc.3`；批准后
+> `0.1.0` 是首个稳定版：`v0.1.0` tag 触发 CI 按 `latest` stage，维护者在
+> npmjs.com 网页 approve 后它就成为默认安装版本。批准前 `latest` 仍指向已公开的 `0.1.0-rc.3`；批准后
 > 安装精确版本 `@yankeguo/dsh-xcode-mcp@0.1.0`，不指定版本的安装也解析到
 > `0.1.0`。`0.1.0-rc.2` 的 staged 记录已被 reject，未公开。
 

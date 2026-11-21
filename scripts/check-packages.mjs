@@ -18,7 +18,9 @@
  *   - pnpm-lock.yaml consistency (root importer only, dependency specifiers
  *     match package.json both ways),
  *   - the pinned CI workflows and the staged-publishing contract (CI only
- *     stages, a human approves locally, the GitHub Release is local too).
+ *     stages; a maintainer approves the staged version(s) in bulk on npmjs.com;
+ *     the GitHub Release is created manually with `gh release create
+ *     --verify-tag`, never by CI, and the old local promote script is gone).
  *
  * Read-only, node stdlib only (no semver dependency: the official semver
  * pattern is inlined). Safe to run in CI after `pnpm build`; wired into both
@@ -261,8 +263,8 @@ if (manifest === null) {
     typeof scripts['release:dry'] === 'string' && scripts['release:dry'].includes('stage-release.mjs') && scripts['release:dry'].includes('--dry-run'),
     'add "release:dry": "pnpm build && node scripts/stage-release.mjs --dry-run"')
   check('scripts["release:stage"] runs stage-release.mjs', typeof scripts['release:stage'] === 'string' && scripts['release:stage'].includes('stage-release.mjs'), 'add "release:stage": "pnpm build && node scripts/stage-release.mjs"')
-  check('scripts["release:promote"] runs promote-release.mjs', typeof scripts['release:promote'] === 'string' && scripts['release:promote'].includes('promote-release.mjs'), 'add "release:promote": "node scripts/promote-release.mjs"')
-  check('no direct-publish script (release:publish)', scripts['release:publish'] === undefined, 'remove "release:publish"; CI stages and a human approves, nobody publishes directly')
+  check('no local promote script (release:promote removed)', scripts['release:promote'] === undefined, 'approval happens in bulk on npmjs.com and the GitHub Release is created manually; remove any "release:promote" script')
+  check('no direct-publish script (release:publish)', scripts['release:publish'] === undefined, 'remove "release:publish"; CI stages and a maintainer approves, nobody publishes directly')
 
   // ---- lockfile consistency ---------------------------------------------------
   checkLockfile(manifest)
@@ -363,9 +365,12 @@ function checkLockfile (manifest) {
 }
 
 // ---- repository files --------------------------------------------------------
-for (const script of ['check-packages.mjs', 'stage-release.mjs', 'promote-release.mjs', 'trusted-publishers.sh']) {
+for (const script of ['check-packages.mjs', 'stage-release.mjs', 'trusted-publishers.sh']) {
   check(`scripts/${script} exists`, existsSync(join(ROOT, 'scripts', script)), 'release tooling is missing')
 }
+check('scripts/promote-release.mjs is removed (web approval + manual GitHub Release)',
+  !existsSync(join(ROOT, 'scripts', 'promote-release.mjs')),
+  'delete scripts/promote-release.mjs; approval is done in bulk on npmjs.com and the GitHub Release is created manually')
 const gitignorePath = join(ROOT, '.gitignore')
 if (existsSync(gitignorePath)) {
   const patterns = readFileSync(gitignorePath, 'utf8').split('\n').map(line => line.trim())
@@ -405,8 +410,8 @@ const publishExec = executable(publish)
 const verifyExec = executable(verify)
 
 check('publish.yml declares id-token: write (OIDC)', /id-token: write/u.test(publish), 'required for the npm OIDC token exchange when staging')
-check('publish.yml declares contents: read', /permissions:\s*\n\s*contents: read/u.test(publish), 'CI must not need write access; the GitHub Release is created locally')
-check('publish.yml never requests contents: write', !/contents:\s*write/u.test(publish), 'the GitHub Release is created by scripts/promote-release.mjs, not by CI')
+check('publish.yml declares contents: read', /permissions:\s*\n\s*contents: read/u.test(publish), 'CI must not need write access; the GitHub Release is created manually after approval')
+check('publish.yml never requests contents: write', !/contents:\s*write/u.test(publish), 'the GitHub Release is created manually after approval, never by CI')
 check('verify.yml is read-only (contents: read)', /permissions:\s*\n\s*contents: read/u.test(verify), 'verification must not mutate the repository')
 check('verify.yml has no id-token permission', !/id-token:/u.test(verify), 'verification never touches the registry')
 check('publish.yml uses concurrency group publish without cancel-in-progress',
@@ -425,7 +430,18 @@ check('publish.yml verifies the tag before installing dependencies',
   'a bad tag must fail in seconds, before the install/test/build cycle')
 check('publish.yml never runs pnpm publish', !/\bpnpm publish\b/u.test(publishExec), 'CI stages and never publishes directly')
 check('publish.yml never runs a plain npm publish', !/(?<!stage )\bnpm publish\b/u.test(publishExec), 'CI only runs "npm stage publish" via scripts/stage-release.mjs')
-check('publish.yml never creates the GitHub Release', !/gh release (?:create|edit)/u.test(publishExec), 'scripts/promote-release.mjs creates it locally')
+// The summary step PRINTS the exact `gh release create` command for the
+// maintainer/agent to run after approval; CI itself must never execute it.
+// Every line that mentions `gh release create|edit` must be a printed `echo`
+// line (comments are already stripped by `executable`), and `contents: read`
+// additionally makes a GitHub Release write impossible from this workflow.
+const ghReleaseLines = publishExec.split('\n').filter(line => /gh release (?:create|edit)/u.test(line))
+// Printed guidance must be a single plain double-quoted echo: no command
+// separators, no backticks, no command substitution inside the string.
+const isPrintOnly = line => /^\s*echo\s+"[^"]*"$/u.test(line) && !/[`;]/u.test(line) && !line.includes('$(')
+check('publish.yml only prints gh release guidance, never executes it',
+  ghReleaseLines.length > 0 && ghReleaseLines.every(isPrintOnly),
+  'the GitHub Release is created manually after approval, never by CI')
 check('publish.yml never creates or pushes tags', !/\bgit\s+(?:tag|push)\b/u.test(publishExec), 'CI never creates, moves, or deletes tags; push the tag yourself')
 check('verify.yml never touches npm staging/publishing/trust', !/\bnpm\s+(?:stage|publish|trust)\b/u.test(verifyExec), 'verification needs no registry credentials')
 check('verify.yml never creates the GitHub Release', !/gh release (?:create|edit)/u.test(verifyExec), 'verification is read-only')
@@ -438,10 +454,23 @@ check('stage-release.mjs defaults prerelease versions to the next dist-tag',
 check('stage-release.mjs rejects an explicit latest dist-tag for prereleases',
   /options\.distTag === 'latest'/u.test(stageScript) && /prerelease/u.test(stageScript),
   'a prerelease staged with latest would make npm install resolve to it on approval; reject it')
-const promoteScript = existsSync(join(ROOT, 'scripts', 'promote-release.mjs')) ? readFileSync(join(ROOT, 'scripts', 'promote-release.mjs'), 'utf8') : ''
-check('promote-release.mjs marks prerelease GitHub Releases (--prerelease)',
-  /'--prerelease'/u.test(promoteScript) && /'--prerelease=false'/u.test(promoteScript),
-  'gh release create/edit must mark prerelease versions --prerelease and keep stable releases non-prerelease')
+// The approval step moved from a local script to the npmjs.com web UI, and the
+// GitHub Release is now created manually. Keep those two documentation
+// contracts checked: the next-step summary must describe the web approval and
+// the `gh release create --verify-tag` command (printed, not executed).
+const readme = existsSync(join(ROOT, 'README.md')) ? readFileSync(join(ROOT, 'README.md'), 'utf8') : ''
+check('README.md does not reference the removed promote script',
+  !/promote-release/u.test(readme),
+  'README must describe npmjs.com web approval and the manual "gh release create --verify-tag" step instead')
+check('publish.yml summary points at npmjs.com web approval',
+  /npmjs\.com/u.test(publishExec),
+  'the next-step summary must tell the maintainer to approve the staged version on npmjs.com')
+check('publish.yml summary documents the manual GitHub Release with --verify-tag',
+  /gh release create/u.test(publishExec) && /--verify-tag/u.test(publishExec),
+  'the next-step summary must print "gh release create ... --verify-tag" for the maintainer/agent to run after approval')
+check('publish.yml summary prints --notes-file and the stable/prerelease release flags',
+  /--notes-file/u.test(publishExec) && /--latest\b/u.test(publishExec) && /--prerelease --latest=false/u.test(publishExec),
+  'the printed gh release create command must carry --notes-file plus --latest (stable) or --prerelease --latest=false (prerelease)')
 const trustScript = existsSync(join(ROOT, 'scripts', 'trusted-publishers.sh')) ? readFileSync(join(ROOT, 'scripts', 'trusted-publishers.sh'), 'utf8') : ''
 check('trusted-publishers.sh configures --allow-stage-publish', /TRUST_ARGS=\([^)]*--allow-stage-publish/u.test(trustScript), 'CI needs stage-only trust')
 check('trusted-publishers.sh never grants --allow-publish', !/TRUST_ARGS=\([^)]*--allow-publish\b/u.test(trustScript), 'a publish-only record would let CI publish without human approval')

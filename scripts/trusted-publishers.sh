@@ -7,8 +7,9 @@
 # exist before a trusted publisher can be attached; this package is already
 # public — `0.0.0-stage` and `0.1.0-rc.1` — see docs/PUBLISHING.md "新包首次发布").
 # Afterward .github/workflows/publish.yml stages new versions with a short-lived
-# OIDC token and no NPM_TOKEN secret at all; a human then approves the staged
-# version locally with scripts/promote-release.mjs.
+# OIDC token and no NPM_TOKEN secret at all; a maintainer then approves the
+# staged version(s) in bulk on npmjs.com, and the GitHub Release is created
+# manually after approval (see docs/PUBLISHING.md).
 #
 # The CI workflow never publishes directly. A trusted-publisher record created
 # with --allow-publish does NOT authorize `npm stage publish`; such old records
@@ -166,5 +167,9 @@ echo "${PACKAGE_NAME} allows staged publishing from ${REPO} // ${WORKFLOW_FILE}.
 echo "Next steps:"
 echo "  1. push a v* tag (or run workflow_dispatch with an existing release_tag)"
 echo "     -> .github/workflows/${WORKFLOW_FILE} stages the package, publishes nothing"
-echo "  2. a maintainer runs scripts/promote-release.mjs locally (npm login + 2FA)"
-echo "     to approve the staged version and create the GitHub Release"
+echo "  2. a maintainer approves the staged version(s) in bulk on npmjs.com"
+echo "     (Staged packages / pending approvals page; login + 2FA)"
+echo "  3. after approval, create the GitHub Release manually:"
+echo "     gh release create <tag> --repo yankeguo/dsh-xcode-mcp --title <tag>"
+echo "       --notes-file docs/releases/v<version>.md --verify-tag"
+echo "     (stable: --latest; prerelease: --prerelease --latest=false)"

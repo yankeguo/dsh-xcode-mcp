@@ -62,12 +62,12 @@ Installing the bundle is enough — no manual skill installation. Xcode 26 ships
 ## Installation
 
 ```sh
-# CLI (desktop profile). 0.1.0 is the first stable release; after approval the
-# default install (latest) resolves to it:
+# CLI (desktop profile). 0.1.0 is the first stable release; once a maintainer
+# approves it on npmjs.com, the default install (latest) resolves to it:
 dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0
 dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp
 
-# Until 0.1.0 is approved, latest still points at the public 0.1.0-rc.3:
+# Until 0.1.0 is approved on npmjs.com, latest still points at the public 0.1.0-rc.3:
 dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.3
 
 # or in the Web UI: Plugins → Add plugin → @yankeguo/dsh-xcode-mcp
@@ -77,8 +77,12 @@ dsh plugin --profile desktop add @yankeguo/dsh-xcode-mcp@0.1.0-rc.3
 > `next` both point at it; `0.0.0-stage` and `0.1.0-rc.1` are earlier public
 > versions, and `0.1.0-rc.2` was staged but rejected, so it was never
 > published. `0.1.0` is the first stable release: its `v0.1.0` tag workflow
-> stages it with the `latest` dist-tag, and a maintainer approves it afterwards
-> (CI only stages). After approval, unversioned installs resolve to `0.1.0`.
+> stages it with the `latest` dist-tag (CI only stages), and a maintainer
+> approves the staged version on npmjs.com; nothing is public until that
+> approval. After approval a maintainer or agent creates the GitHub Release
+> manually with `gh release create ... --verify-tag` (the repository has no
+> local promote script). Once approved, unversioned installs resolve to
+> `0.1.0`.
 
 For local development, install this checkout as a linked bundle through DSH's plugin manager (`install_bundle` pointed at this directory); run `pnpm build` first so `lib/index.js` exists, and rebuild after source changes.
 
@@ -103,7 +107,7 @@ pnpm install
 pnpm verify   # typecheck + unit tests + build
 ```
 
-The build emits `lib/index.js`, which the bundle manifest exports. Publishing uses the staged model (CI stages, a maintainer approves with 2FA, then the GitHub Release is created); see [docs/PUBLISHING.md](https://github.com/yankeguo/dsh-xcode-mcp/blob/main/docs/PUBLISHING.md).
+The build emits `lib/index.js`, which the bundle manifest exports. Publishing uses the staged model: CI stages the tagged version with OIDC and nothing is public until a maintainer approves the staged version in bulk on npmjs.com; after approval a maintainer or agent creates the GitHub Release manually with `gh release create ... --verify-tag`. The repository has no local promote script. See [docs/PUBLISHING.md](https://github.com/yankeguo/dsh-xcode-mcp/blob/main/docs/PUBLISHING.md).
 
 ## Layout
 
@@ -114,7 +118,7 @@ cordis.patch.yml    bundle row
 locale/en.json      Plugin Manager metadata (English)
 locale/zh.json      Plugin Manager metadata (Chinese)
 icon.svg            bundle icon
-scripts/            staged-publish tooling (stage / promote / trust / checks)
+scripts/            staged-publish tooling (stage / trust / checks)
 .github/workflows/  verify.yml (CI checks) and publish.yml (staged publishing)
 docs/               publishing guide, audit record, and release notes
 ```

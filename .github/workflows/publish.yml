@@ -8,14 +8,17 @@ name: publish
 # package.json) on the npm registry. Staging publishes nothing. Stable versions
 # stage with the latest dist-tag; prerelease tags (v<version>-rc.N etc.) stage
 # with next, so pushing a tag is the whole trigger for either kind. A
-# maintainer then approves the staged version locally with:
+# maintainer then approves the staged version(s) in bulk on npmjs.com
+# (Staged packages / pending approvals); approval needs a human npmjs.com login
+# with 2FA but no local CLI. After approval, a maintainer (or the agent they
+# notify) creates the GitHub Release manually:
 #
-#   node scripts/promote-release.mjs
+#   gh release create <tag> --repo yankeguo/dsh-xcode-mcp --title <tag> \
+#     --notes-file docs/releases/v<version>.md --verify-tag
 #
-# (interactive `npm login` + 2FA), and the same script creates the GitHub
-# Release. The approval step is human-only by design: npm accepts OIDC tokens
-# only for `npm stage publish`/`npm publish`, never for `npm stage
-# list`/`approve`/`reject`.
+# This repository has no local promote script. The approval step is human-only
+# by design: npm accepts OIDC tokens only for `npm stage publish`/`npm publish`,
+# never for `npm stage list`/`approve`/`reject`.
 #
 # Why this model:
 #   - Nothing of a version is public until it has been staged and a human
@@ -59,8 +62,8 @@ on:
         required: true
         type: string
 
-# Read-only repository access: the GitHub Release is created by the local
-# promote script, not by CI.
+# Read-only repository access: the GitHub Release is created manually after
+# approval, never by CI.
 permissions:
   contents: read
   # Required for OIDC: lets the npm CLI exchange a GitHub Actions ID token for a
@@ -171,7 +174,7 @@ jobs:
       - name: Verify the release tag matches the package version
         # Staging a tag whose version differs from the manifest would produce a
         # release whose npm version cannot be found from the tag/GitHub
-        # Release, and the local promote script would fail after CI succeeded.
+        # Release, and the manual GitHub Release step would then mismatch.
         run: |
           node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs'
@@ -206,9 +209,10 @@ jobs:
 
       - name: Stage the package on npm (publishes nothing)
         # This uploads the package as a staged version and prints the stage id.
-        # Nothing is public until a maintainer approves it locally with
-        # scripts/promote-release.mjs (npm login + 2FA). The dist-tag comes from
-        # the resolve step: latest for stable versions, next for prereleases.
+        # Nothing is public until a maintainer approves it on npmjs.com (web,
+        # human login + 2FA; multiple staged versions can be approved in bulk).
+        # The dist-tag comes from the resolve step: latest for stable versions,
+        # next for prereleases.
         # No NODE_AUTH_TOKEN and no NPM_TOKEN: the npm CLI detects GitHub
         # Actions, exchanges the OIDC token (`id-token: write`) for a
         # short-lived registry token, and attaches provenance.
@@ -221,19 +225,28 @@ jobs:
         if: success()
         run: |
           set -euo pipefail
+          if [[ "${RELEASE_DIST_TAG}" == "next" ]]; then
+            release_flags="--prerelease --latest=false"
+          else
+            release_flags="--latest"
+          fi
           {
             echo ""
-            echo "### Next step: approve the staged version (human, 2FA)"
+            echo "### Next step: approve on npmjs.com, then create the GitHub Release manually"
             echo ""
-            echo "Nothing is public yet. A maintainer runs locally, after \`npm login\` as an @yankeguo maintainer:"
+            echo "Nothing is public yet. A maintainer, in a browser:"
+            echo ""
+            echo "1. signs in to <https://www.npmjs.com> (2FA) and opens the staged packages / pending approvals page for \`@yankeguo/dsh-xcode-mcp\`;"
+            echo "2. checks the staged dist-tag \`${RELEASE_DIST_TAG}\` (stable: latest; prerelease: next) — a prerelease staged as latest must be rejected and restaged, never approved;"
+            echo "3. approves the version(s) in one batch (the page supports multi-select). Approval publishes immediately and cannot be undone."
+            echo ""
+            echo "After approval, the maintainer (or an agent the maintainer notifies) creates the GitHub Release manually — this workflow never creates, moves or deletes tags:"
             echo ""
             echo '```sh'
-            echo "node scripts/promote-release.mjs --version ${RELEASE_VERSION} --dry-run   # inspect the plan"
-            echo "node scripts/promote-release.mjs --version ${RELEASE_VERSION}             # approve + GitHub Release"
+            echo "gh release create ${RELEASE_TAG} --repo ${GITHUB_REPOSITORY} --title ${RELEASE_TAG} --notes-file docs/releases/v${RELEASE_VERSION}.md --verify-tag ${release_flags}"
             echo '```'
             echo ""
-            echo "- Staged with dist-tag \`${RELEASE_DIST_TAG}\` (stable: latest; prerelease: next). Approval publishes under that tag; a prerelease can never become latest."
-            echo "- Approval prompts for the one-time password; npm publishes the package as it is approved."
+            echo "- \`--verify-tag\` only uses the existing tag \`${RELEASE_TAG}\`; it never creates or moves a tag."
+            echo "- Afterwards check that the npm dist-tags, the release tag and the GitHub Release agree on the same version and commit."
             echo "- To restage after a fix, re-run this workflow via workflow_dispatch with the SAME \`release_tag\` (\`${RELEASE_TAG}\`); never move or recreate the tag."
-            echo "- The GitHub Release is created/updated by the promote script, not by this workflow (prereleases are marked --prerelease --latest=false)."
           } >> "${GITHUB_STEP_SUMMARY}"
